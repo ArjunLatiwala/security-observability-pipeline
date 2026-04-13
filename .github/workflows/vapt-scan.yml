@@ -1,46 +1,7 @@
 name: Step 4 - Sandbox Deep Security (VAPT)
 
-on: 
-  workflow_dispatch: # Allows you to start it manually from the UI
-
-jobs:
-  vapt_job:
-    runs-on: ubuntu-latest
-    
-    # This deploys your "Staging Application" inside the GitHub runner
-    services:
-      staging-app:
-        image: bkimminich/juice-shop
-        ports:
-          - 3000:3000
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Wait for Staging App to be Ready
-        run: |
-          echo "Waiting for application to start..."
-          # Retries every 5 seconds until it gets a 200 OK from the app
-          until $(curl --output /dev/null --silent --head --fail http://localhost:3000); do
-            printf '.'
-            sleep 5
-          done
-          echo "App is UP and RUNNING!"
-
-      # Step 4: Deep Security (Automated Scan)
-      - name: OWASP ZAP Full Scan
-        # This action runs the Spider and the Active Scan
-        uses: zaproxy/action-full-scan@v0.7.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # Localhost:3000 points to the 'staging-app' service above
-          target: 'http://localhost:3000/'
-          # -a includes experimental rules to find more bugs
-          cmd_options: '-a'name: Step 4 - Sandbox Deep Security (VAPT)
-
-on: 
-  workflow_dispatch: 
+on:
+  workflow_dispatch:
 
 jobs:
   vapt_job:
@@ -54,35 +15,26 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4 # Updated to v4
+        uses: actions/checkout@v4
 
-      - name: Wait for Staging App to be Ready
+      - name: Wait for Staging App
         run: |
-          echo "Waiting for application to start..."
+          echo "Waiting for app..."
           until $(curl --output /dev/null --silent --head --fail http://localhost:3000); do
             printf '.'
             sleep 5
           done
-          echo "App is UP!"
 
       - name: OWASP ZAP Full Scan
-        uses: zaproxy/action-full-scan@v0.12.0 # Updated to a newer stable version
+        uses: zaproxy/action-full-scan@v0.12.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           target: 'http://localhost:3000/'
           cmd_options: '-a'
 
       - name: Upload Security Report
-        if: always() 
-        uses: actions/upload-artifact@v4 # Updated to v4
-        with:
-          name: vapt-report
-          path: 'report_html.html'
-
-      # Generate the "VAPT Report" artifact mentioned in your diagram
-      - name: Upload Security Report
-        if: always() # Run even if the scan finds vulnerabilities
-        uses: actions/upload-artifact@v3
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: vapt-report
           path: 'report_html.html'
