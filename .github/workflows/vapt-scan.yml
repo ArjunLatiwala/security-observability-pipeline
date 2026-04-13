@@ -30,7 +30,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           target: 'http://localhost:3000/'
-          cmd_options: '-a'
+          cmd_options: '-a -j'
 
       - name: Upload Security Report
         if: always()
