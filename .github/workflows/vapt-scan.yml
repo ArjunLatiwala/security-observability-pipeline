@@ -31,7 +31,7 @@ jobs:
             report_json.json
 
   # ==========================================
-  # JOB 2: STEP 5 (Benchmarking with Grafana Integration)
+  # JOB 2: STEP 5 (Benchmarking with Grafana)
   # ==========================================
   benchmarking_job:
     runs-on: ubuntu-latest
@@ -40,25 +40,33 @@ jobs:
       - name: Checkout Code 
         uses: actions/checkout@v4
 
+      # Install tools
       - name: Install Apache Bench
         run: sudo apt-get update && sudo apt-get install -y apache2-utils
 
+      - name: Install k6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg software-properties-common
+          curl -s https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      # Stress Test
       - name: Run Apache Bench Stress Test
         run: ab -n 500 -c 10 https://husaintrivedi.site/ | tee stress-results.txt
 
-      - name: Create k6 script with Project ID
+      # Create k6 script (clean version)
+      - name: Create k6 script
         run: |
-          echo "import http from 'k6/http';
+          cat << 'EOF' > k6-test.js
+          import http from 'k6/http';
           import { sleep, check } from 'k6';
+
           export const options = { 
             vus: 10, 
             duration: '10s',
-            ext: {
-              cloud: {
-                projectID: 7299599, 
-                name: 'HusainTrivedi Live Site Benchmark'
-              }
-            },
             thresholds: { 
               http_req_duration: ['p(98)<2000'], 
               http_req_failed: ['rate<0.01'],
@@ -66,20 +74,24 @@ jobs:
               http_req_waiting: ['p(95)<1000']
             } 
           };
+
           export default function () {
             let res = http.get('https://husaintrivedi.site'); 
             check(res, { 'status is 200': (r) => r.status === 200 });
             sleep(1);
-          }" > k6-test.js
+          }
+          EOF
 
-      - name: Run k6 Load Test and Stream to Grafana
-        uses: grafana/k6-action@v0.3.1
+      # ✅ NEW CORRECT WAY (Grafana Cloud)
+      - name: Run k6 Cloud Test
+        run: |
+          k6 cloud run k6-test.js \
+            --token $K6_CLOUD_TOKEN \
+            --project-id 7299599
         env:
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
-        with:
-          filename: k6-test.js
-          flags: --out cloud
 
+      # Upload logs
       - name: Upload Performance Logs
         if: always()
         uses: actions/upload-artifact@v4
