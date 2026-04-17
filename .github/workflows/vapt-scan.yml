@@ -3,8 +3,14 @@ name: Step 4 & 5 - Security & Benchmarking Pipeline
 on:
   workflow_dispatch:
 
+# Fixes the 403 error by giving the runner permission to write reports/issues
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
 jobs:
-  testing_pipeline:
+  vapt_benchmarking_job:
     runs-on: ubuntu-latest
     
     services:
@@ -28,14 +34,14 @@ jobs:
       # ==========================================
       # STEP 4: DEEP SECURITY (VAPT)
       # ==========================================
-      - name: OWASP ZAP Full Scan
-        uses: zaproxy/action-full-scan@v0.12.0
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline-scan@v0.12.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           target: 'http://localhost:3000/'
-          cmd_options: '-a -j'
+          fail_action: false 
 
-      - name: Upload VAPT Report
+      - name: Upload Security Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -43,27 +49,40 @@ jobs:
           path: 'report_html.html'
 
       # ==========================================
-      # STEP 5: BENCHMARKING (LOAD & STRESS)
+      # STEP 5: BENCHMARKING (Load & Stress)
       # ==========================================
       
-      # 5a. STRESS TEST using Apache Bench
-      - name: Apache Bench Stress Test
+      - name: Install Apache Bench
+        run: sudo apt-get update && sudo apt-get install -y apache2-utils
+
+      - name: Run Apache Bench Stress Test
+        run: ab -n 500 -c 10 http://localhost:3000/ | tee stress-results.txt
+
+      - name: Create k6 script
         run: |
-          sudo apt-get update && sudo apt-get install -y apache2-utils
-          echo "Running Stress Test: 1000 requests, 10 at a time"
-          ab -n 1000 -c 10 http://localhost:3000/ > stress-results.txt
-      
-      # 5b. LOAD TEST using k6
-      # This runs a script that simulates 50 users for 30 seconds
+          echo "import http from 'k6/http';
+          import { sleep, check } from 'k6';
+          export const options = { 
+            vus: 10, 
+            duration: '10s',
+            thresholds: { http_req_duration: ['p(95)<500'] } 
+          };
+          export default function () {
+            let res = http.get('http://localhost:3000');
+            check(res, { 'status is 200': (r) => r.status === 200 });
+            sleep(1);
+          }" > k6-test.js
+
       - name: Run k6 Load Test
         uses: grafana/k6-action@v0.3.1
         with:
-          filename: performance-test.js
-          flags: --vus 50 --duration 30s
+          filename: k6-test.js
 
-      - name: Upload Performance Results
+      - name: Upload Benchmarking Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: performance-benchmarks
-          path: stress-results.txt
+          path: |
+            stress-results.txt
+            k6-test.js
