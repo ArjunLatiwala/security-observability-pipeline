@@ -54,7 +54,7 @@ jobs:
             vus: 10, 
             duration: '10s',
             ext: {
-              loadimpact: {
+              cloud: {
                 projectID: 7299192, 
                 name: 'HusainTrivedi Live Site Benchmark'
               }
@@ -74,12 +74,11 @@ jobs:
 
       - name: Run k6 Load Test and Stream to Grafana
         uses: grafana/k6-action@v0.3.1
+        env:
+          K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
         with:
           filename: k6-test.js
           flags: --out cloud
-          # The 'env' block now correctly injects the secret for the action to use.
-          env: |
-            K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
 
       - name: Upload Performance Logs
         if: always()
