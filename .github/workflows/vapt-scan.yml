@@ -1,42 +1,56 @@
-name: Step 4 & 5 - Live Site Security & Benchmarking
+name: Step 4 & 5 - Parallel Security & Benchmarking
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+# The "permissions" block has been completely removed to enforce the Principle of Least Privilege.
 
 jobs:
-  vapt_benchmarking_job:
+  # ==========================================
+  # JOB 1: STEP 4 (Deep Security / VAPT)
+  # ==========================================
+  security_scan_job:
     runs-on: ubuntu-latest
-    # REMOVED: services block (Juice Shop is gone)
-
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ==========================================
-      # STEP 4: SECURITY (Full Scan on Live Site)
-      # ==========================================
       - name: OWASP ZAP Full Scan
-        # Note: I changed 'baseline' to 'full-scan' per your request
-        uses: zaproxy/action-full-scan@v0.12.0 
+        uses: zaproxy/action-full-scan@v0.12.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # The GITHUB_TOKEN has been removed so ZAP doesn't try to create Issues
           target: 'https://husaintrivedi.site' 
           fail_action: false
+          # Command options instruct ZAP to generate both HTML and JSON reports
+          cmd_options: '-a -j -r report_html.html -J report_json.json'
 
-      # ==========================================
-      # STEP 5: BENCHMARKING (Live Site)
-      # ==========================================
-      
+      - name: Upload Security Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vapt-report
+          path: |
+            report_html.html
+            report_json.json
+
+  # ==========================================
+  # JOB 2: STEP 5 (Benchmarking)
+  # ==========================================
+  benchmarking_job:
+    runs-on: ubuntu-latest
+    # Because there is no "needs: security_scan_job" statement here, 
+    # GitHub Actions will spin up a second server and run this at the exact same time as Job 1.
+    
+    steps:
+      - name: Checkout Code 
+        uses: actions/checkout@v4
+
       - name: Install Apache Bench
         run: sudo apt-get update && sudo apt-get install -y apache2-utils
 
       - name: Run Apache Bench Stress Test
-        # CHANGE: Pointing to the live site
+        # Hits the live site to test infrastructure/WAF resilience
         run: ab -n 500 -c 10 https://husaintrivedi.site/ | tee stress-results.txt
 
       - name: Create k6 script
@@ -46,10 +60,9 @@ jobs:
           export const options = { 
             vus: 10, 
             duration: '10s',
-            thresholds: { http_req_duration: ['p(95)<2000'] } 
+            thresholds: { http_req_duration:['p(95)<2000'] } 
           };
           export default function () {
-            // CHANGE: Pointing k6 to the live site
             let res = http.get('https://husaintrivedi.site'); 
             check(res, { 'status is 200': (r) => r.status === 200 });
             sleep(1);
