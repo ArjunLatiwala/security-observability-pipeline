@@ -76,7 +76,8 @@ jobs:
         uses: grafana/k6-action@v0.3.1
         with:
           filename: k6-test.js
-
+          flags: --network host  # <--- Add this flag
+          
       - name: Upload Benchmarking Results
         if: always()
         uses: actions/upload-artifact@v4
