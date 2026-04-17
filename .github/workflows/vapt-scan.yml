@@ -55,18 +55,30 @@ jobs:
 
       - name: Create k6 script
         run: |
-          echo "import http from 'k6/http';
-          import { sleep, check } from 'k6';
-          export const options = { 
-            vus: 10, 
-            duration: '10s',
-            thresholds: { http_req_duration:['p(95)<2000'] } 
-          };
-          export default function () {
-            let res = http.get('https://husaintrivedi.site'); 
-            check(res, { 'status is 200': (r) => r.status === 200 });
-            sleep(1);
-          }" > k6-test.js
+                echo "import http from 'k6/http';
+                import { sleep, check } from 'k6';
+                export const options = { 
+                  vus: 10, 
+                  duration: '10s',
+                  thresholds: { 
+                    // 1. SPEED: 98% of requests must complete in under 2 seconds
+                    http_req_duration: ['p(98)<2000'], 
+      
+                    // 2. ERROR RATE: Less than 1% of requests are allowed to fail (e.g. 500 errors)
+                    http_req_failed: ['rate<0.01'],
+      
+                    // 3. ASSERTIONS: 100% of our custom checks (status == 200) must pass
+                    checks: ['rate==1.0'],
+      
+                    // 4. TTFB (Time To First Byte): 95% of requests must start downloading within 1 second
+                    http_req_waiting: ['p(95)<1000']
+                  } 
+                };
+                export default function () {
+                  let res = http.get('https://husaintrivedi.site'); 
+                  check(res, { 'status is 200': (r) => r.status === 200 });
+                  sleep(1);
+                }" > k6-test.js
 
       - name: Run k6 Load Test
         uses: grafana/k6-action@v0.3.1
