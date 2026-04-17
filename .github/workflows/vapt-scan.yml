@@ -1,9 +1,91 @@
-- name: Run k6 Load Test and Stream to Grafana
+name: Step 4 & 5 - Parallel Security & Benchmarking with Observability
+
+on:
+  workflow_dispatch:
+
+jobs:
+  # ==========================================
+  # JOB 1: STEP 4 (Security Scan)
+  # ==========================================
+  security_scan_job:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: OWASP ZAP Full Scan
+        uses: zaproxy/action-full-scan@v0.12.0
+        with:
+          target: 'https://husaintrivedi.site' 
+          fail_action: false
+          cmd_options: '-a -j -r report_html.html -J report_json.json'
+
+      - name: Upload Security Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vapt-report
+          path: |
+            report_html.html
+            report_json.json
+
+  # ==========================================
+  # JOB 2: STEP 5 (Benchmarking with Grafana Integration)
+  # ==========================================
+  benchmarking_job:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code 
+        uses: actions/checkout@v4
+
+      - name: Install Apache Bench
+        run: sudo apt-get update && sudo apt-get install -y apache2-utils
+
+      - name: Run Apache Bench Stress Test
+        run: ab -n 500 -c 10 https://husaintrivedi.site/ | tee stress-results.txt
+
+      - name: Create k6 script with Project ID
+        run: |
+          echo "import http from 'k6/http';
+          import { sleep, check } from 'k6';
+          export const options = { 
+            vus: 10, 
+            duration: '10s',
+            ext: {
+              loadimpact: {
+                projectID: 7299192, 
+                name: 'HusainTrivedi Live Site Benchmark'
+              }
+            },
+            thresholds: { 
+              http_req_duration: ['p(98)<2000'], 
+              http_req_failed: ['rate<0.01'],
+              checks: ['rate==1.0'],
+              http_req_waiting: ['p(95)<1000']
+            } 
+          };
+          export default function () {
+            let res = http.get('https://husaintrivedi.site'); 
+            check(res, { 'status is 200': (r) => r.status === 200 });
+            sleep(1);
+          }" > k6-test.js
+
+      - name: Run k6 Load Test and Stream to Grafana
         uses: grafana/k6-action@v0.3.1
         with:
           filename: k6-test.js
-          # This is the magic command that tells k6 to stream the results
           flags: --out cloud
-          # The secret is passed directly inside the 'with' block
+          # The 'env' block now correctly injects the secret for the action to use.
           env: |
             K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+
+      - name: Upload Performance Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-site-performance-logs
+          path: |
+            stress-results.txt
+            k6-test.js
