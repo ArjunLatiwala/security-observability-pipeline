@@ -28,13 +28,6 @@ jobs:
           target: 'https://husaintrivedi.site' 
           fail_action: false
 
-      - name: Upload Security Report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vapt-report
-          path: 'report_html.html'
-
       # ==========================================
       # STEP 5: BENCHMARKING (Live Site)
       # ==========================================
@@ -67,11 +60,11 @@ jobs:
         with:
           filename: k6-test.js
 
-      - name: Upload All Results
+      - name: Upload Performance Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: live-site-results
+          name: live-site-performance-results
           path: |
             stress-results.txt
-            report_html.html
+            k6-test.js
