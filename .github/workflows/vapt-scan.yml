@@ -1,4 +1,4 @@
-name: Step 4 & 5 - Security & Benchmarking Pipeline
+name: Step 4 & 5 - Live Site Security & Benchmarking
 
 on:
   workflow_dispatch:
@@ -11,45 +11,40 @@ permissions:
 jobs:
   vapt_benchmarking_job:
     runs-on: ubuntu-latest
-    
-    services:
-      staging-app: # This name is our "Hostname"
-        image: bkimminich/juice-shop
-        ports:
-          - 3000:3000
+    # REMOVED: services block (Juice Shop is gone)
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Wait for Staging App
-        run: |
-          echo "Waiting for Juice Shop to start..."
-          until $(curl --output /dev/null --silent --head --fail http://localhost:3000); do
-            printf '.'
-            sleep 5
-          done
-
       # ==========================================
-      # STEP 4: SECURITY (ZAP Baseline)
+      # STEP 4: SECURITY (Full Scan on Live Site)
       # ==========================================
-      - name: OWASP ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.12.0
+      - name: OWASP ZAP Full Scan
+        # Note: I changed 'baseline' to 'full-scan' per your request
+        uses: zaproxy/action-full-scan@v0.12.0 
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          target: 'http://localhost:3000/'
-          fail_action: false 
+          target: 'https://husaintrivedi.site' 
+          fail_action: false
+
+      - name: Upload Security Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vapt-report
+          path: 'report_html.html'
 
       # ==========================================
-      # STEP 5: BENCHMARKING (Load & Stress)
+      # STEP 5: BENCHMARKING (Live Site)
       # ==========================================
       
       - name: Install Apache Bench
         run: sudo apt-get update && sudo apt-get install -y apache2-utils
 
       - name: Run Apache Bench Stress Test
-        # AB runs on the host, so it uses localhost
-        run: ab -n 500 -c 10 http://localhost:3000/ | tee stress-results.txt
+        # CHANGE: Pointing to the live site
+        run: ab -n 500 -c 10 https://husaintrivedi.site/ | tee stress-results.txt
 
       - name: Create k6 script
         run: |
@@ -58,11 +53,11 @@ jobs:
           export const options = { 
             vus: 10, 
             duration: '10s',
-            thresholds: { http_req_duration: ['p(95)<1000'] } 
+            thresholds: { http_req_duration: ['p(95)<2000'] } 
           };
           export default function () {
-            // CHANGE: We use 'staging-app' because k6 is in a container
-            let res = http.get('http://staging-app:3000'); 
+            // CHANGE: Pointing k6 to the live site
+            let res = http.get('https://husaintrivedi.site'); 
             check(res, { 'status is 200': (r) => r.status === 200 });
             sleep(1);
           }" > k6-test.js
@@ -71,13 +66,12 @@ jobs:
         uses: grafana/k6-action@v0.3.1
         with:
           filename: k6-test.js
-          # REMOVED: The incorrect --network flag
 
       - name: Upload All Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: step-4-5-results
+          name: live-site-results
           path: |
             stress-results.txt
             report_html.html
