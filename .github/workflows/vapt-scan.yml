@@ -1,10 +1,10 @@
-name: Step 4 - Sandbox Deep Security (VAPT)
+name: Step 4 & 5 - Security & Benchmarking Pipeline
 
 on:
   workflow_dispatch:
 
 jobs:
-  vapt_job:
+  testing_pipeline:
     runs-on: ubuntu-latest
     
     services:
@@ -19,12 +19,15 @@ jobs:
 
       - name: Wait for Staging App
         run: |
-          echo "Waiting for app..."
+          echo "Waiting for Juice Shop to start..."
           until $(curl --output /dev/null --silent --head --fail http://localhost:3000); do
             printf '.'
             sleep 5
           done
 
+      # ==========================================
+      # STEP 4: DEEP SECURITY (VAPT)
+      # ==========================================
       - name: OWASP ZAP Full Scan
         uses: zaproxy/action-full-scan@v0.12.0
         with:
@@ -32,9 +35,35 @@ jobs:
           target: 'http://localhost:3000/'
           cmd_options: '-a -j'
 
-      - name: Upload Security Report
+      - name: Upload VAPT Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: vapt-report
           path: 'report_html.html'
+
+      # ==========================================
+      # STEP 5: BENCHMARKING (LOAD & STRESS)
+      # ==========================================
+      
+      # 5a. STRESS TEST using Apache Bench
+      - name: Apache Bench Stress Test
+        run: |
+          sudo apt-get update && sudo apt-get install -y apache2-utils
+          echo "Running Stress Test: 1000 requests, 10 at a time"
+          ab -n 1000 -c 10 http://localhost:3000/ > stress-results.txt
+      
+      # 5b. LOAD TEST using k6
+      # This runs a script that simulates 50 users for 30 seconds
+      - name: Run k6 Load Test
+        uses: grafana/k6-action@v0.3.1
+        with:
+          filename: performance-test.js
+          flags: --vus 50 --duration 30s
+
+      - name: Upload Performance Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-benchmarks
+          path: stress-results.txt
