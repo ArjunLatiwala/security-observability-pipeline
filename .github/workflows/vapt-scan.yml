@@ -89,9 +89,7 @@ jobs:
 
       # ✅ NEW CORRECT WAY (Grafana Cloud)
       - name: Run k6 Cloud Test
-        run: |
-          curl -s https://dl.k6.io/install.sh | sudo bash
-          k6 version
+        run: k6 run --out cloud k6-test.js
         env:
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
 
