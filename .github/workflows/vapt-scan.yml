@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     
     services:
-      staging-app:
+      staging-app: # This name is our "Hostname"
         image: bkimminich/juice-shop
         ports:
           - 3000:3000
@@ -40,13 +40,6 @@ jobs:
           target: 'http://localhost:3000/'
           fail_action: false 
 
-      - name: Upload Security Report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vapt-report
-          path: 'report_html.html'
-
       # ==========================================
       # STEP 5: BENCHMARKING (Load & Stress)
       # ==========================================
@@ -55,6 +48,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y apache2-utils
 
       - name: Run Apache Bench Stress Test
+        # AB runs on the host, so it uses localhost
         run: ab -n 500 -c 10 http://localhost:3000/ | tee stress-results.txt
 
       - name: Create k6 script
@@ -67,7 +61,8 @@ jobs:
             thresholds: { http_req_duration: ['p(95)<1000'] } 
           };
           export default function () {
-            let res = http.get('http://localhost:3000');
+            // CHANGE: We use 'staging-app' because k6 is in a container
+            let res = http.get('http://staging-app:3000'); 
             check(res, { 'status is 200': (r) => r.status === 200 });
             sleep(1);
           }" > k6-test.js
@@ -76,13 +71,13 @@ jobs:
         uses: grafana/k6-action@v0.3.1
         with:
           filename: k6-test.js
-          flags: --network host  # <--- Add this flag
-          
-      - name: Upload Benchmarking Results
+          # REMOVED: The incorrect --network flag
+
+      - name: Upload All Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: performance-benchmarks
+          name: step-4-5-results
           path: |
             stress-results.txt
-            k6-test.js
+            report_html.html
