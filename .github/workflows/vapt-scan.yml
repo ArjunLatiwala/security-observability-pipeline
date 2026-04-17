@@ -46,9 +46,12 @@ jobs:
 
       - name: Install k6
         run: |
-          curl -L https://github.com/grafana/k6/releases/latest/download/k6-v0.49.0-linux-amd64.tar.gz -o k6.tar.gz
-          tar -xzf k6.tar.gz
-          sudo mv k6-*-linux-amd64/k6 /usr/bin/k6
+          sudo apt-get update
+          sudo apt-get install -y gnupg software-properties-common
+          curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
           k6 version
 
       # Stress Test
