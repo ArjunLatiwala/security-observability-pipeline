@@ -4,10 +4,9 @@ on:
   workflow_dispatch:
 
 # 🌍 GLOBAL CONFIGURATION
-# Changing these values here updates the entire pipeline for all 400 repos.
 env:
   TARGET_URL: 'https://husaintrivedi.site'
-  LATENCY_THRESHOLD: '2000' # Maximum allowed P98 latency in ms
+  LATENCY_THRESHOLD: '2000' 
 
 jobs:
   # ==========================================
@@ -26,15 +25,12 @@ jobs:
           fail_action: false
           cmd_options: '-a -j -r report_html.html -J report_json.json'
 
-      # ✅ WAZUH AUDIT: Log Security Scan completion
       - name: Log Security Event to Wazuh
         if: always()
         continue-on-error: true
         run: |
-          # 1. Authenticate with Wazuh
           TOKEN=$(curl -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" -k -s -X GET "${{ secrets.WAZUH_URL }}/security/user/authenticate" | jq -r .data.token)
           
-          # 2. Push Security Audit Log
           curl -k -s -X POST "${{ secrets.WAZUH_URL }}/syslog" \
           -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
@@ -71,15 +67,11 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update && sudo apt-get install -y k6
 
-      # ✅ STRESS TEST (Apache Bench)
       - name: Run Apache Bench Stress Test
         run: ab -n 500 -c 10 ${{ env.TARGET_URL }}/ | tee stress_results.txt
 
-      # ✅ LOAD TEST (k6)
+      # ✅ FIXED: Combined all environment variables into one block
       - name: Run k6 Load Test
-        env:
-          THRESHOLD: ${{ env.LATENCY_THRESHOLD }}
-          URL: ${{ env.TARGET_URL }}
         run: |
           cat << EOF > k6-test.js
           import http from 'k6/http';
@@ -96,11 +88,12 @@ jobs:
           EOF
           k6 run --out cloud --tag product_id="${{ secrets.DEFECTDOJO_PRODUCT_ID }}" k6-test.js
         env:
+          THRESHOLD: ${{ env.LATENCY_THRESHOLD }}
+          URL: ${{ env.TARGET_URL }}
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
 
-      # ✅ WAZUH AUDIT: Log Performance Benchmarking status
       - name: Log Performance Event to Wazuh
         if: always()
         continue-on-error: true
@@ -118,13 +111,12 @@ jobs:
             "threshold": "${{ env.LATENCY_THRESHOLD }}ms"
           }'
 
-      # ✅ SENTRY: Report Exceptions/Regression Errors
       - name: Report Failure to Sentry
         if: failure()
         env:
           THRESHOLD: ${{ env.LATENCY_THRESHOLD }}
+          URL: ${{ env.TARGET_URL }}
         run: |
-          # Professional DSN Parser
           DSN="${{ secrets.SENTRY_DSN }}"
           SENTRY_KEY=$(echo $DSN | awk -F'[:@/]' '{print $4}')
           SENTRY_HOST=$(echo $DSN | awk -F'[:@/]' '{print $5}')
@@ -139,17 +131,12 @@ jobs:
               "values": [
                 {
                   "type": "PerformanceThresholdError",
-                  "value": "Benchmarking failed to meet threshold of '$THRESHOLD'ms for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}."
+                  "value": "Application at '$URL' failed to meet the latency threshold of '$THRESHOLD'ms for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}."
                 }
               ]
             },
             "level": "error",
             "fingerprint": ["${{ github.event.repository.name }}", "perf-failure"],
-            "extra": {
-              "repository": "${{ github.event.repository.name }}",
-              "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            },
             "tags": {
               "repo": "${{ github.event.repository.name }}",
               "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
