@@ -1,14 +1,16 @@
-name: Step 4 & 5 - Scalable Enterprise DevSecOps Pipeline
+name: Step 4 & 5 - Final Scalable Enterprise Architecture
 
 on:
   workflow_dispatch:
 
+# 🌍 GLOBAL CONFIGURATION - Change once here to update all 400 repos
 env:
   TARGET_URL: 'https://husaintrivedi.site'
+  LATENCY_THRESHOLD: '10' # Set to 10 to test Sentry failure
 
 jobs:
   # ==========================================
-  # STEP 4: Security Scan (VAPT)
+  # STEP 4: Security (VAPT) + Wazuh SIEM
   # ==========================================
   security_scan:
     runs-on: ubuntu-latest
@@ -23,17 +25,15 @@ jobs:
           fail_action: false
           cmd_options: '-a -j -r report_html.html -J report_json.json'
 
-      # ✅ WAZUH INTEGRATION (Ready for when you open your GCP firewall)
       - name: Push Event to Wazuh SIEM
         if: always()
-        continue-on-error: true # Prevents pipeline fail if firewall is still closed
+        continue-on-error: true # Safe scaling: won't break if firewall is closed
         run: |
-          echo "Attempting to sync with Wazuh for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
-          # Get Auth Token
-          TOKEN=$(curl -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" -k -s -X GET "https://35.200.183.81:55000/security/user/authenticate" | jq -r .data.token)
+          # 1. Get Auth Token
+          TOKEN=$(curl -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" -k -s -X GET "${{ secrets.WAZUH_URL }}/security/user/authenticate" | jq -r .data.token)
           
-          # Send the security event
-          curl -k -s -X POST "https://35.200.183.81:55000/syslog" \
+          # 2. Push the log to your server
+          curl -k -s -X POST "${{ secrets.WAZUH_URL }}/syslog" \
           -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
           -d '{
@@ -53,7 +53,7 @@ jobs:
             report_json.json
 
   # ==========================================
-  # STEP 5: Benchmarking + Sentry Observability
+  # STEP 5: Benchmarking + Sentry + Grafana
   # ==========================================
   benchmarking:
     runs-on: ubuntu-latest
@@ -68,21 +68,21 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update && sudo apt-get install -y k6
 
-      - name: Apache Bench Stress
-        run: ab -n 500 -c 10 ${{ env.TARGET_URL }}/ | tee stress-results.txt
-
       - name: Create k6 script
+        # 💡 Mapping to env prevents "Context access invalid" errors
+        env:
+          THRESHOLD: ${{ env.LATENCY_THRESHOLD }}
+          URL: ${{ env.TARGET_URL }}
         run: |
-          cat << 'EOF' > k6-test.js
+          cat << EOF > k6-test.js
           import http from 'k6/http';
           import { sleep, check } from 'k6';
           export const options = { 
-            vus: 10, 
-            duration: '10s',
-            thresholds: { 'http_req_duration': ['p(98)<10'] } // 🎯 Set low to test Sentry
+            vus: 10, duration: '10s',
+            thresholds: { 'http_req_duration': ['p(98)<$THRESHOLD'] } 
           };
           export default function () {
-            let res = http.get('${{ env.TARGET_URL }}'); 
+            let res = http.get('$URL'); 
             check(res, { 'status is 200': (r) => r.status === 200 });
             sleep(1);
           }
@@ -98,28 +98,38 @@ jobs:
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
 
-      # ✅ SCALABLE SENTRY LOGIC (Fingerprinted for 400 repos)
+      # ✅ DYNAMIC SENTRY ALERT (Professional Formatting)
       - name: Report Failure to Sentry
         if: failure()
+        env:
+          THRESHOLD: ${{ env.LATENCY_THRESHOLD }}
+          URL: ${{ env.TARGET_URL }}
         run: |
-          # Parse DSN from Org Secret
+          # Parse DSN (Using Org Secret)
           DSN="${{ secrets.SENTRY_DSN }}"
           SENTRY_KEY=$(echo $DSN | awk -F'[:@/]' '{print $4}')
           SENTRY_HOST=$(echo $DSN | awk -F'[:@/]' '{print $5}')
           SENTRY_PROJECT=$(echo $DSN | awk -F'[:@/]' '{print $6}')
       
-          curl -X POST "https://${SENTRY_HOST}/api/${SENTRY_PROJECT}/store/" \
-          -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=${SENTRY_KEY}, sentry_client=curl/1.0" \
+          curl -X POST "https://$SENTRY_HOST/api/$SENTRY_PROJECT/store/" \
+          -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$SENTRY_KEY, sentry_client=curl/1.0" \
           -H 'Content-Type: application/json' \
           -d '{
             "message": "Performance Regression: ${{ github.event.repository.name }}",
+            "exception": {
+              "values": [
+                {
+                  "type": "PerformanceThresholdError",
+                  "value": "Application at '$URL' failed to meet the latency threshold of '$THRESHOLD'ms for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}."
+                }
+              ]
+            },
             "level": "error",
-            "platform": "node",
             "fingerprint": ["${{ github.event.repository.name }}", "perf-failure"],
-            "logger": "github-actions",
             "extra": {
               "repository": "${{ github.event.repository.name }}",
               "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+              "threshold_limit": "'$THRESHOLD'ms",
               "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             },
             "tags": {
@@ -134,5 +144,4 @@ jobs:
         with:
           name: live-site-performance-logs
           path: |
-            stress-results.txt
             k6-test.js
