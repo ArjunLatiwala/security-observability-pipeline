@@ -104,30 +104,31 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          TOKEN=$(curl -k -s --connect-timeout 10 --max-time 15 \
-            -X POST "${{ secrets.WAZUH_URL }}/security/user/authenticate" \
-            -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" \
-            | jq -r '.data.token // "AUTH_FAILED"')
-      
-          echo "Token status: ${TOKEN:0:20}..."
-      
-          if [ "$TOKEN" = "AUTH_FAILED" ] || [ -z "$TOKEN" ]; then
-            echo "⚠️ Wazuh auth failed — skipping"
-            exit 0
-          fi
-      
-          curl -k -s --connect-timeout 10 --max-time 15 \
-          -X POST "${{ secrets.WAZUH_URL }}/events" \
-          -H "Authorization: Bearer $TOKEN" \
-          -H "Content-Type: application/json" \
-          -d "{
-            \"events\": [{
-              \"event_type\": \"PERFORMANCE_BENCHMARK\",
-              \"status\": \"${{ job.status }}\",
-              \"repo\": \"${{ github.event.repository.name }}\",
-              \"threshold\": \"${{ env.LATENCY_THRESHOLD }}ms\"
-            }]
-          }"
+                # 1. Authenticate (This part is working in your logs!)
+                TOKEN=$(curl -k -s --connect-timeout 10 --max-time 15 \
+                  -X POST "${{ secrets.WAZUH_URL }}/security/user/authenticate" \
+                  -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" \
+                  | jq -r '.data.token // "AUTH_FAILED"')
+            
+                if [ "$TOKEN" = "AUTH_FAILED" ] || [ -z "$TOKEN" ]; then
+                  echo "⚠️ Wazuh auth failed — skipping"
+                  exit 0
+                fi
+            
+                # 2. Push to /syslog instead of /events
+                # We send a single JSON object, not an array.
+                curl -k -s --connect-timeout 10 --max-time 15 \
+                -X POST "${{ secrets.WAZUH_URL }}/syslog" \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
+                  \"repo\": \"${{ github.event.repository.name }}\",
+                  \"event_type\": \"PERFORMANCE_BENCHMARK\",
+                  \"status\": \"${{ job.status }}\",
+                  \"threshold\": \"${{ env.LATENCY_THRESHOLD }}ms\"
+                }"
+                echo "Success: Performance event pushed to Wazuh."
 
       - name: Report Failure to Sentry
         if: failure()
