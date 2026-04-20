@@ -1,4 +1,4 @@
-name: Step 4 & 5 - Performance & Error Tracking (Wazuh Paused)
+name: Step 4 & 5 - Scalable Enterprise DevSecOps Pipeline
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ env:
 
 jobs:
   # ==========================================
-  # STEP 4: Security Scan (Wazuh skipped for now)
+  # STEP 4: Security Scan (VAPT)
   # ==========================================
   security_scan:
     runs-on: ubuntu-latest
@@ -23,9 +23,25 @@ jobs:
           fail_action: false
           cmd_options: '-a -j -r report_html.html -J report_json.json'
 
-      # WAZUH IS COMMENTED OUT UNTIL FIREWALL IS OPEN
-      # - name: Push Event to Wazuh
-      #   run: echo "Wazuh server is currently unreachable. Skipping..."
+      # ✅ WAZUH INTEGRATION (Ready for when you open your GCP firewall)
+      - name: Push Event to Wazuh SIEM
+        if: always()
+        continue-on-error: true # Prevents pipeline fail if firewall is still closed
+        run: |
+          echo "Attempting to sync with Wazuh for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
+          # Get Auth Token
+          TOKEN=$(curl -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" -k -s -X GET "https://35.200.183.81:55000/security/user/authenticate" | jq -r .data.token)
+          
+          # Send the security event
+          curl -k -s -X POST "https://35.200.183.81:55000/syslog" \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+            "repo": "${{ github.event.repository.name }}",
+            "event": "VAPT_SCAN_COMPLETED",
+            "status": "${{ job.status }}"
+          }'
 
       - name: Upload Security Report
         if: always()
@@ -37,7 +53,7 @@ jobs:
             report_json.json
 
   # ==========================================
-  # STEP 5: Benchmarking + Sentry Active
+  # STEP 5: Benchmarking + Sentry Observability
   # ==========================================
   benchmarking:
     runs-on: ubuntu-latest
@@ -45,7 +61,7 @@ jobs:
       - name: Checkout Code 
         uses: actions/checkout@v4
 
-      - name: Setup Tools
+      - name: Setup Tools (k6 & AB)
         run: |
           sudo apt-get update && sudo apt-get install -y apache2-utils jq
           curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
@@ -61,8 +77,9 @@ jobs:
           import http from 'k6/http';
           import { sleep, check } from 'k6';
           export const options = { 
-            vus: 10, duration: '10s',
-            thresholds: { 'http_req_duration': ['p(98)<10'] } 
+            vus: 10, 
+            duration: '10s',
+            thresholds: { 'http_req_duration': ['p(98)<10'] } // 🎯 Set low to test Sentry
           };
           export default function () {
             let res = http.get('${{ env.TARGET_URL }}'); 
@@ -81,28 +98,33 @@ jobs:
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
 
+      # ✅ SCALABLE SENTRY LOGIC (Fingerprinted for 400 repos)
       - name: Report Failure to Sentry
         if: failure()
         run: |
-          # Parse DSN into parts
-          SENTRY_KEY=$(echo "${{ secrets.SENTRY_DSN }}" | sed 's|https://\([^@]*\)@.*|\1|')
-          SENTRY_HOST=$(echo "${{ secrets.SENTRY_DSN }}" | sed 's|https://[^@]*@\([^/]*\)/.*|\1|')
-          SENTRY_PROJECT=$(echo "${{ secrets.SENTRY_DSN }}" | sed 's|.*/||')
+          # Parse DSN from Org Secret
+          DSN="${{ secrets.SENTRY_DSN }}"
+          SENTRY_KEY=$(echo $DSN | awk -F'[:@/]' '{print $4}')
+          SENTRY_HOST=$(echo $DSN | awk -F'[:@/]' '{print $5}')
+          SENTRY_PROJECT=$(echo $DSN | awk -F'[:@/]' '{print $6}')
       
           curl -X POST "https://${SENTRY_HOST}/api/${SENTRY_PROJECT}/store/" \
           -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=${SENTRY_KEY}, sentry_client=curl/1.0" \
           -H 'Content-Type: application/json' \
           -d '{
-            "message": "Performance Regression Detected",
+            "message": "Performance Regression: ${{ github.event.repository.name }}",
             "level": "error",
             "platform": "node",
+            "fingerprint": ["${{ github.event.repository.name }}", "perf-failure"],
             "logger": "github-actions",
             "extra": {
               "repository": "${{ github.event.repository.name }}",
+              "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
               "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             },
             "tags": {
-              "repo": "${{ github.event.repository.name }}"
+              "repo": "${{ github.event.repository.name }}",
+              "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
             }
           }'
 
