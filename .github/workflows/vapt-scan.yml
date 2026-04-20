@@ -1,11 +1,15 @@
-name: Step 4 & 5 - Full Architecture with Observability Stack
+name: Step 4 & 5 - Final Scalable Architecture
 
 on:
   workflow_dispatch:
 
+# 🌍 GLOBAL VARIABLES FOR THE WHOLE PIPELINE
+env:
+  TARGET_URL: 'https://husaintrivedi.site'
+
 jobs:
   # ==========================================
-  # JOB 1: STEP 4 (Security Scan + Wazuh SIEM)
+  # JOB 1: STEP 4 (Security Scan + Wazuh)
   # ==========================================
   security_scan_job:
     runs-on: ubuntu-latest
@@ -16,24 +20,15 @@ jobs:
       - name: OWASP ZAP Full Scan
         uses: zaproxy/action-full-scan@v0.12.0
         with:
-          target: 'https://husaintrivedi.site' 
+          # Uses global variable
+          target: ${{ env.TARGET_URL }} 
           fail_action: false
           cmd_options: '-a -j -r report_html.html -J report_json.json'
 
-      # FUTURE: WAZUH (SIEM/XDR) Integration
-      # We log the security scan event to Wazuh using the Product ID
-      - name: Log Security Event to Wazuh
+      - name: Log to Wazuh (Future Stack)
         if: always()
         run: |
-          curl -u ${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }} \
-          -k -X POST "${{ secrets.WAZUH_URL }}/active-responses/v1/scan_event" \
-          -H "Content-Type: application/json" \
-          -d '{
-            "app_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-            "event": "VAPT_SCAN_COMPLETED",
-            "target": "https://husaintrivedi.site",
-            "scan_type": "OWASP_ZAP_FULL"
-          }'
+          echo "Sending security event for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
 
       - name: Upload Security Report
         if: always()
@@ -61,7 +56,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y k6
 
       - name: Run Apache Bench Stress Test
-        run: ab -n 500 -c 10 https://husaintrivedi.site/ | tee stress-results.txt
+        # Uses global variable
+        run: ab -n 500 -c 10 ${{ env.TARGET_URL }}/ | tee stress-results.txt
 
       - name: Create k6 script
         run: |
@@ -81,33 +77,27 @@ jobs:
           };
 
           export default function () {
-            let res = http.get('https://husaintrivedi.site'); 
+            // This now pulls the URL from the shell environment
+            let res = http.get('${{ env.TARGET_URL }}'); 
             check(res, { 'status is 200': (r) => r.status === 200 });
             sleep(1);
           }
           EOF
 
-      # Grafana Cloud Integration (k6 Results)
       - name: Run k6 Cloud Test
-        id: k6_run
-        run: k6 run --out cloud k6-test.js
+        run: |
+          k6 run --out cloud \
+          --name "${{ github.event.repository.name }}" \
+          --tag product_id="${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+          k6-test.js
         env:
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+          K6_CLOUD_PROJECT_ID: 7324608
 
-      # FUTURE: SENTRY.IO Integration (Exceptions/Errors)
-      # If k6 thresholds fail, we create a performance issue in Sentry
-      - name: Report Performance Regression to Sentry
+      - name: Report to Sentry (Future Stack)
         if: failure()
         run: |
-          curl -X POST "${{ secrets.SENTRY_URL }}/api/0/projects/${{ secrets.SENTRY_ORG }}/${{ secrets.SENTRY_PROJECT }}/issues/" \
-          -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
-          -H "Content-Type: application/json" \
-          -d '{
-            "title": "Performance Threshold Failed: Product ID ${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-            "message": "k6 load test failed to meet P(98) < 2000ms threshold",
-            "level": "error",
-            "tags": { "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" }
-          }'
+          echo "Performance Threshold Failed for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
 
       - name: Upload Performance Logs
         if: always()
