@@ -81,19 +81,19 @@ jobs:
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
 
-      # ✅ SENTRY IS NOW FULLY ACTIVE
-      # This will create an error in Sentry ONLY if k6 fails (latency > 2s)
+
+# ✅ THE CORRECT STORE API LOGIC
       - name: Report Failure to Sentry
         if: failure()
         run: |
-          curl -s -X POST "https://sentry.io/api/0/projects/creole-studios-xj/security-observability-pipeline/issues/" \
-          -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
-          -H "Content-Type: application/json" \
+          curl -X POST 'https://o451125092668416.ingest.us.sentry.io/api/4511251092668416/store/' \
+          -H 'X-Sentry-Auth: Sentry sentry_version=7, sentry_key=cb987d6db5b5cd038f43df835e8bcdd, sentry_client=curl/1.0' \
+          -H 'Content-Type: application/json' \
           -d '{
-            "title": "Performance Failure: ${{ github.event.repository.name }}",
-            "message": "Latency threshold exceeded for Product ID ${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+            "message": "Performance Regression: ${{ github.event.repository.name }}",
             "level": "error",
-            "tags": { 
+            "platform": "node",
+            "tags": {
               "repo": "${{ github.event.repository.name }}",
               "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
             }
