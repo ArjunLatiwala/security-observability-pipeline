@@ -6,7 +6,7 @@ on:
 # 🌍 GLOBAL CONFIGURATION
 env:
   TARGET_URL: 'https://husaintrivedi.site'
-  LATENCY_THRESHOLD: '2000' 
+  LATENCY_THRESHOLD: '10' 
 
 jobs:
   # ==========================================
