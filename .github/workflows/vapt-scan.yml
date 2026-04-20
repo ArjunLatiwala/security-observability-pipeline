@@ -98,17 +98,23 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          TOKEN=$(curl -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" -k -s -X GET "${{ secrets.WAZUH_URL }}/security/user/authenticate" | jq -r .data.token)
-          
-          curl -k -s -X POST "${{ secrets.WAZUH_URL }}/syslog" \
+          TOKEN=$(curl -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" \
+            -k -s -X POST "${{ secrets.WAZUH_URL }}/security/user/authenticate" \
+            | jq -r .data.token)
+      
+          curl -k -s -X POST "${{ secrets.WAZUH_URL }}/events" \
           -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
           -d '{
-            "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-            "repo": "${{ github.event.repository.name }}",
-            "event_type": "PERFORMANCE_BENCHMARK",
-            "status": "${{ job.status }}",
-            "threshold": "${{ env.LATENCY_THRESHOLD }}ms"
+            "events": [
+              {
+                "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+                "repo": "${{ github.event.repository.name }}",
+                "event_type": "PERFORMANCE_BENCHMARK",
+                "status": "${{ job.status }}",
+                "threshold": "${{ env.LATENCY_THRESHOLD }}ms"
+              }
+            ]
           }'
 
       - name: Report Failure to Sentry
