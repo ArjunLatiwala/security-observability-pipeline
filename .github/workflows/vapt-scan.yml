@@ -1,15 +1,14 @@
-name: Step 4 & 5 - Parallel Security & Benchmarking with Observability
+name: Step 4 & 5 - Full Architecture with Observability Stack
 
 on:
   workflow_dispatch:
 
 jobs:
   # ==========================================
-  # JOB 1: STEP 4 (Security Scan)
+  # JOB 1: STEP 4 (Security Scan + Wazuh SIEM)
   # ==========================================
   security_scan_job:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -21,6 +20,21 @@ jobs:
           fail_action: false
           cmd_options: '-a -j -r report_html.html -J report_json.json'
 
+      # FUTURE: WAZUH (SIEM/XDR) Integration
+      # We log the security scan event to Wazuh using the Product ID
+      - name: Log Security Event to Wazuh
+        if: always()
+        run: |
+          curl -u ${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }} \
+          -k -X POST "${{ secrets.WAZUH_URL }}/active-responses/v1/scan_event" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "app_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+            "event": "VAPT_SCAN_COMPLETED",
+            "target": "https://husaintrivedi.site",
+            "scan_type": "OWASP_ZAP_FULL"
+          }'
+
       - name: Upload Security Report
         if: always()
         uses: actions/upload-artifact@v4
@@ -31,38 +45,24 @@ jobs:
             report_json.json
 
   # ==========================================
-  # JOB 2: STEP 5 (Benchmarking with Grafana)
+  # JOB 2: STEP 5 (Benchmarking + Sentry + Grafana)
   # ==========================================
   benchmarking_job:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout Code 
         uses: actions/checkout@v4
 
-      # Install tools
-      - name: Install Apache Bench
-        run: sudo apt-get update && sudo apt-get install -y apache2-utils
-
-      - name: Install k6
+      - name: Install Tools (AB & k6)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gnupg ca-certificates
-      
+          sudo apt-get update && sudo apt-get install -y apache2-utils gnupg ca-certificates
           curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
-      
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
-      
-          sudo apt-get update
-          sudo apt-get install -y k6
-      
-          k6 version
+          sudo apt-get update && sudo apt-get install -y k6
 
-      # Stress Test
       - name: Run Apache Bench Stress Test
         run: ab -n 500 -c 10 https://husaintrivedi.site/ | tee stress-results.txt
 
-      # Create k6 script (clean version)
       - name: Create k6 script
         run: |
           cat << 'EOF' > k6-test.js
@@ -87,13 +87,28 @@ jobs:
           }
           EOF
 
-      # ✅ NEW CORRECT WAY (Grafana Cloud)
+      # Grafana Cloud Integration (k6 Results)
       - name: Run k6 Cloud Test
+        id: k6_run
         run: k6 run --out cloud k6-test.js
         env:
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
 
-      # Upload logs
+      # FUTURE: SENTRY.IO Integration (Exceptions/Errors)
+      # If k6 thresholds fail, we create a performance issue in Sentry
+      - name: Report Performance Regression to Sentry
+        if: failure()
+        run: |
+          curl -X POST "${{ secrets.SENTRY_URL }}/api/0/projects/${{ secrets.SENTRY_ORG }}/${{ secrets.SENTRY_PROJECT }}/issues/" \
+          -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "title": "Performance Threshold Failed: Product ID ${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+            "message": "k6 load test failed to meet P(98) < 2000ms threshold",
+            "level": "error",
+            "tags": { "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" }
+          }'
+
       - name: Upload Performance Logs
         if: always()
         uses: actions/upload-artifact@v4
