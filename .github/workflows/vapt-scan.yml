@@ -86,13 +86,17 @@ jobs:
       - name: Report Failure to Sentry
         if: failure()
         run: |
-          curl -s -X POST "https://sentry.io/api/0/projects/creole-studios-xj/${{ github.event.repository.name }}/issues/" \
+          curl -s -X POST "https://sentry.io/api/0/projects/creole-studios-xj/security-observability-pipeline/issues/" \
           -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
           -H "Content-Type: application/json" \
           -d '{
-            "title": "Performance Regression: ${{ github.event.repository.name }}",
-            "message": "Latency exceeded 2000ms threshold for Product ID ${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-            "level": "error"
+            "title": "Performance Failure: ${{ github.event.repository.name }}",
+            "message": "Latency threshold exceeded for Product ID ${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+            "level": "error",
+            "tags": { 
+              "repo": "${{ github.event.repository.name }}",
+              "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
+            }
           }'
 
       - name: Upload Performance Logs
