@@ -1,18 +1,19 @@
-name: Step 4 & 5 - Final Scalable Enterprise Architecture
+name: Step 4 & 5 - Professional DevSecOps Observability Pipeline
 
 on:
   workflow_dispatch:
 
-# 🌍 GLOBAL CONFIGURATION - Change once here to update all 400 repos
+# 🌍 GLOBAL CONFIGURATION
+# Changing these values here updates the entire pipeline for all 400 repos.
 env:
   TARGET_URL: 'https://husaintrivedi.site'
-  LATENCY_THRESHOLD: '10' # Set to 10 to test Sentry failure
+  LATENCY_THRESHOLD: '2000' # Maximum allowed P98 latency in ms
 
 jobs:
   # ==========================================
-  # STEP 4: Security (VAPT) + Wazuh SIEM
+  # JOB 1: STEP 4 - Deep Security (VAPT)
   # ==========================================
-  security_scan:
+  security_vapt_job:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -25,51 +26,57 @@ jobs:
           fail_action: false
           cmd_options: '-a -j -r report_html.html -J report_json.json'
 
-      - name: Push Event to Wazuh SIEM
+      # ✅ WAZUH AUDIT: Log Security Scan completion
+      - name: Log Security Event to Wazuh
         if: always()
-        continue-on-error: true # Safe scaling: won't break if firewall is closed
+        continue-on-error: true
         run: |
-          # 1. Get Auth Token
+          # 1. Authenticate with Wazuh
           TOKEN=$(curl -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" -k -s -X GET "${{ secrets.WAZUH_URL }}/security/user/authenticate" | jq -r .data.token)
           
-          # 2. Push the log to your server
+          # 2. Push Security Audit Log
           curl -k -s -X POST "${{ secrets.WAZUH_URL }}/syslog" \
           -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
           -d '{
             "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
             "repo": "${{ github.event.repository.name }}",
-            "event": "VAPT_SCAN_COMPLETED",
-            "status": "${{ job.status }}"
+            "event_type": "SECURITY_VAPT_SCAN",
+            "status": "${{ job.status }}",
+            "message": "ZAP Full Scan completed for ${{ env.TARGET_URL }}"
           }'
 
-      - name: Upload Security Report
+      - name: Upload Security Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vapt-report
+          name: vapt-reports
           path: |
             report_html.html
             report_json.json
 
   # ==========================================
-  # STEP 5: Benchmarking + Sentry + Grafana
+  # JOB 2: STEP 5 - Benchmarking (Stress & Load)
   # ==========================================
-  benchmarking:
+  benchmarking_job:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code 
         uses: actions/checkout@v4
 
-      - name: Setup Tools (k6 & AB)
+      - name: Setup Performance Tools
         run: |
           sudo apt-get update && sudo apt-get install -y apache2-utils jq
           curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update && sudo apt-get install -y k6
 
-      - name: Create k6 script
-        # 💡 Mapping to env prevents "Context access invalid" errors
+      # ✅ STRESS TEST (Apache Bench)
+      - name: Run Apache Bench Stress Test
+        run: ab -n 500 -c 10 ${{ env.TARGET_URL }}/ | tee stress_results.txt
+
+      # ✅ LOAD TEST (k6)
+      - name: Run k6 Load Test
         env:
           THRESHOLD: ${{ env.LATENCY_THRESHOLD }}
           URL: ${{ env.TARGET_URL }}
@@ -87,25 +94,37 @@ jobs:
             sleep(1);
           }
           EOF
-
-      - name: Run k6 Cloud Test
-        run: |
-          k6 run --out cloud \
-          --tag product_id="${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
-          k6-test.js
+          k6 run --out cloud --tag product_id="${{ secrets.DEFECTDOJO_PRODUCT_ID }}" k6-test.js
         env:
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
 
-      # ✅ DYNAMIC SENTRY ALERT (Professional Formatting)
+      # ✅ WAZUH AUDIT: Log Performance Benchmarking status
+      - name: Log Performance Event to Wazuh
+        if: always()
+        continue-on-error: true
+        run: |
+          TOKEN=$(curl -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" -k -s -X GET "${{ secrets.WAZUH_URL }}/security/user/authenticate" | jq -r .data.token)
+          
+          curl -k -s -X POST "${{ secrets.WAZUH_URL }}/syslog" \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+            "repo": "${{ github.event.repository.name }}",
+            "event_type": "PERFORMANCE_BENCHMARK",
+            "status": "${{ job.status }}",
+            "threshold": "${{ env.LATENCY_THRESHOLD }}ms"
+          }'
+
+      # ✅ SENTRY: Report Exceptions/Regression Errors
       - name: Report Failure to Sentry
         if: failure()
         env:
           THRESHOLD: ${{ env.LATENCY_THRESHOLD }}
-          URL: ${{ env.TARGET_URL }}
         run: |
-          # Parse DSN (Using Org Secret)
+          # Professional DSN Parser
           DSN="${{ secrets.SENTRY_DSN }}"
           SENTRY_KEY=$(echo $DSN | awk -F'[:@/]' '{print $4}')
           SENTRY_HOST=$(echo $DSN | awk -F'[:@/]' '{print $5}')
@@ -120,7 +139,7 @@ jobs:
               "values": [
                 {
                   "type": "PerformanceThresholdError",
-                  "value": "Application at '$URL' failed to meet the latency threshold of '$THRESHOLD'ms for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}."
+                  "value": "Benchmarking failed to meet threshold of '$THRESHOLD'ms for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}."
                 }
               ]
             },
@@ -129,7 +148,6 @@ jobs:
             "extra": {
               "repository": "${{ github.event.repository.name }}",
               "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-              "threshold_limit": "'$THRESHOLD'ms",
               "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             },
             "tags": {
@@ -138,10 +156,11 @@ jobs:
             }
           }'
 
-      - name: Upload Performance Logs
+      - name: Upload Benchmarking Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: live-site-performance-logs
+          name: performance-logs
           path: |
+            stress_results.txt
             k6-test.js
