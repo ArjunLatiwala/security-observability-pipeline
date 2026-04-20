@@ -93,28 +93,40 @@ jobs:
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
-
+      
+      - name: Test Wazuh Connectivity
+        continue-on-error: true
+        run: |
+          curl -k -sv --connect-timeout 10 \
+          "${{ secrets.WAZUH_URL }}/security/user/authenticate" 2>&1 | head -30
+          
       - name: Log Performance Event to Wazuh
         if: always()
         continue-on-error: true
         run: |
           TOKEN=$(curl -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" \
-            -k -s -X POST "${{ secrets.WAZUH_URL }}/security/user/authenticate" \
-            | jq -r .data.token)
+            -k -s --connect-timeout 10 --max-time 15 \
+            -X POST "${{ secrets.WAZUH_URL }}/security/user/authenticate" \
+            | jq -r '.data.token // "AUTH_FAILED"')
       
-          curl -k -s -X POST "${{ secrets.WAZUH_URL }}/events" \
+          echo "Token status: $TOKEN"
+      
+          if [ "$TOKEN" = "AUTH_FAILED" ] || [ -z "$TOKEN" ]; then
+            echo "⚠️ Wazuh auth failed — skipping"
+            exit 0
+          fi
+      
+          curl -k -s --connect-timeout 10 --max-time 15 \
+          -X POST "${{ secrets.WAZUH_URL }}/events" \
           -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
           -d '{
-            "events": [
-              {
-                "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-                "repo": "${{ github.event.repository.name }}",
-                "event_type": "PERFORMANCE_BENCHMARK",
-                "status": "${{ job.status }}",
-                "threshold": "${{ env.LATENCY_THRESHOLD }}ms"
-              }
-            ]
+            "events": [{
+              "event_type": "PERFORMANCE_BENCHMARK",
+              "status": "${{ job.status }}",
+              "repo": "${{ github.event.repository.name }}",
+              "threshold": "${{ env.LATENCY_THRESHOLD }}ms"
+            }]
           }'
 
       - name: Report Failure to Sentry
