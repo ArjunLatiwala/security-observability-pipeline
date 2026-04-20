@@ -81,12 +81,16 @@ jobs:
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
 
-# ✅ SCALABLE SENTRY INTEGRATION (No SDK needed)
       - name: Report Failure to Sentry
         if: failure()
         run: |
-          curl -X POST 'https://o4511250931580928.ingest.us.sentry.io/api/4511251092668416/store/' \
-          -H 'X-Sentry-Auth: Sentry sentry_version=7, sentry_key=cb987d6db5b5cd038f43df835e8bcdd, sentry_client=curl/1.0' \
+          # Parse DSN into parts
+          SENTRY_KEY=$(echo "${{ secrets.SENTRY_DSN }}" | sed 's|https://\([^@]*\)@.*|\1|')
+          SENTRY_HOST=$(echo "${{ secrets.SENTRY_DSN }}" | sed 's|https://[^@]*@\([^/]*\)/.*|\1|')
+          SENTRY_PROJECT=$(echo "${{ secrets.SENTRY_DSN }}" | sed 's|.*/||')
+      
+          curl -X POST "https://${SENTRY_HOST}/api/${SENTRY_PROJECT}/store/" \
+          -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=${SENTRY_KEY}, sentry_client=curl/1.0" \
           -H 'Content-Type: application/json' \
           -d '{
             "message": "Performance Regression Detected",
@@ -95,12 +99,10 @@ jobs:
             "logger": "github-actions",
             "extra": {
               "repository": "${{ github.event.repository.name }}",
-              "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
               "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             },
             "tags": {
-              "repo": "${{ github.event.repository.name }}",
-              "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
+              "repo": "${{ github.event.repository.name }}"
             }
           }'
 
