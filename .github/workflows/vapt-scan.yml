@@ -104,12 +104,12 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          TOKEN=$(curl -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" \
-            -k -s --connect-timeout 10 --max-time 15 \
+          TOKEN=$(curl -k -s --connect-timeout 10 --max-time 15 \
             -X POST "${{ secrets.WAZUH_URL }}/security/user/authenticate" \
+            -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" \
             | jq -r '.data.token // "AUTH_FAILED"')
       
-          echo "Token status: $TOKEN"
+          echo "Token status: ${TOKEN:0:20}..."
       
           if [ "$TOKEN" = "AUTH_FAILED" ] || [ -z "$TOKEN" ]; then
             echo "⚠️ Wazuh auth failed — skipping"
@@ -120,14 +120,14 @@ jobs:
           -X POST "${{ secrets.WAZUH_URL }}/events" \
           -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
-          -d '{
-            "events": [{
-              "event_type": "PERFORMANCE_BENCHMARK",
-              "status": "${{ job.status }}",
-              "repo": "${{ github.event.repository.name }}",
-              "threshold": "${{ env.LATENCY_THRESHOLD }}ms"
+          -d "{
+            \"events\": [{
+              \"event_type\": \"PERFORMANCE_BENCHMARK\",
+              \"status\": \"${{ job.status }}\",
+              \"repo\": \"${{ github.event.repository.name }}\",
+              \"threshold\": \"${{ env.LATENCY_THRESHOLD }}ms\"
             }]
-          }'
+          }"
 
       - name: Report Failure to Sentry
         if: failure()
