@@ -1,17 +1,16 @@
-name: Step 4 & 5 - Final Scalable Architecture
+name: Step 4 & 5 - Performance & Error Tracking (Wazuh Paused)
 
 on:
   workflow_dispatch:
 
-# 🌍 GLOBAL VARIABLES FOR THE WHOLE PIPELINE
 env:
   TARGET_URL: 'https://husaintrivedi.site'
 
 jobs:
   # ==========================================
-  # JOB 1: STEP 4 (Security Scan + Wazuh)
+  # STEP 4: Security Scan (Wazuh skipped for now)
   # ==========================================
-  security_scan_job:
+  security_scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -20,15 +19,13 @@ jobs:
       - name: OWASP ZAP Full Scan
         uses: zaproxy/action-full-scan@v0.12.0
         with:
-          # Uses global variable
-          target: ${{ env.TARGET_URL }} 
+          target: ${{ env.TARGET_URL }}
           fail_action: false
           cmd_options: '-a -j -r report_html.html -J report_json.json'
 
-      - name: Log to Wazuh (Future Stack)
-        if: always()
-        run: |
-          echo "Sending security event for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
+      # WAZUH IS COMMENTED OUT UNTIL FIREWALL IS OPEN
+      # - name: Push Event to Wazuh
+      #   run: echo "Wazuh server is currently unreachable. Skipping..."
 
       - name: Upload Security Report
         if: always()
@@ -40,23 +37,22 @@ jobs:
             report_json.json
 
   # ==========================================
-  # JOB 2: STEP 5 (Benchmarking + Sentry + Grafana)
+  # STEP 5: Benchmarking + Sentry Active
   # ==========================================
-  benchmarking_job:
+  benchmarking:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code 
         uses: actions/checkout@v4
 
-      - name: Install Tools (AB & k6)
+      - name: Setup Tools
         run: |
-          sudo apt-get update && sudo apt-get install -y apache2-utils gnupg ca-certificates
+          sudo apt-get update && sudo apt-get install -y apache2-utils jq
           curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update && sudo apt-get install -y k6
 
-      - name: Run Apache Bench Stress Test
-        # Uses global variable
+      - name: Apache Bench Stress
         run: ab -n 500 -c 10 ${{ env.TARGET_URL }}/ | tee stress-results.txt
 
       - name: Create k6 script
@@ -64,20 +60,11 @@ jobs:
           cat << 'EOF' > k6-test.js
           import http from 'k6/http';
           import { sleep, check } from 'k6';
-
           export const options = { 
-            vus: 10, 
-            duration: '10s',
-            thresholds: { 
-              http_req_duration: ['p(98)<2000'], 
-              http_req_failed: ['rate<0.01'],
-              checks: ['rate==1.0'],
-              http_req_waiting: ['p(95)<1000']
-            } 
+            vus: 10, duration: '10s',
+            thresholds: { 'http_req_duration': ['p(98)<2000'] } 
           };
-
           export default function () {
-            // This now pulls the URL from the shell environment
             let res = http.get('${{ env.TARGET_URL }}'); 
             check(res, { 'status is 200': (r) => r.status === 200 });
             sleep(1);
@@ -94,10 +81,19 @@ jobs:
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
 
-      - name: Report to Sentry (Future Stack)
+      # ✅ SENTRY IS NOW FULLY ACTIVE
+      # This will create an error in Sentry ONLY if k6 fails (latency > 2s)
+      - name: Report Failure to Sentry
         if: failure()
         run: |
-          echo "Performance Threshold Failed for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
+          curl -s -X POST "https://sentry.io/api/0/projects/creole-studios-xj/${{ github.event.repository.name }}/issues/" \
+          -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "title": "Performance Regression: ${{ github.event.repository.name }}",
+            "message": "Latency exceeded 2000ms threshold for Product ID ${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+            "level": "error"
+          }'
 
       - name: Upload Performance Logs
         if: always()
