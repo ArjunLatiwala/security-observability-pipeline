@@ -62,7 +62,7 @@ jobs:
           import { sleep, check } from 'k6';
           export const options = { 
             vus: 10, duration: '10s',
-            thresholds: { 'http_req_duration': ['p(98)<2000'] } 
+            thresholds: { 'http_req_duration': ['p(98)<10'] } 
           };
           export default function () {
             let res = http.get('${{ env.TARGET_URL }}'); 
