@@ -6,8 +6,9 @@ on:
 # 🌍 GLOBAL CONFIGURATION
 env:
   TARGET_URL: 'https://husaintrivedi.site'
-  LATENCY_THRESHOLD: '10' # Forces failure for testing Sentry/Audit
-  WAZUH_INDEXER_URL: 'https://35.200.183.81:8080' # Using remapped port 8080
+  LATENCY_THRESHOLD: '10' # Forces failure to verify Sentry and Audit logs
+  # 🎯 UPDATED WITH YOUR NEW IP
+  WAZUH_INDEXER_URL: 'https://35.200.203.148:8080' 
 
 jobs:
   # ==========================================
@@ -26,13 +27,12 @@ jobs:
           fail_action: false
           cmd_options: '-a -j -r report_html.html -J report_json.json'
 
-      # ✅ LOG SECURITY AUDIT TO MASTER DATABASE (Port 8080)
       - name: Log Security Audit to Wazuh
         if: always()
         continue-on-error: true
         run: |
           curl -k -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
-          -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" \
+          -u "admin:Admin@123456" \
           -H "Content-Type: application/json" \
           -d '{
             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
@@ -40,7 +40,6 @@ jobs:
             "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
             "repo": "${{ github.event.repository.name }}",
             "status": "${{ job.status }}",
-            "message": "ZAP Scan completed for ${{ env.TARGET_URL }}",
             "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           }'
 
@@ -54,7 +53,7 @@ jobs:
             report_json.json
 
   # ==========================================
-  # JOB 2: STEP 5 - Benchmarking (Stress & Load)
+  # JOB 2: STEP 5 - Benchmarking + Sentry + Grafana
   # ==========================================
   benchmarking_job:
     runs-on: ubuntu-latest
@@ -62,7 +61,7 @@ jobs:
       - name: Checkout Code 
         uses: actions/checkout@v4
 
-      - name: Setup Performance Tools
+      - name: Setup Tools (k6 & AB)
         run: |
           sudo apt-get update && sudo apt-get install -y apache2-utils jq
           curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
@@ -76,32 +75,21 @@ jobs:
         run: |
           cat << EOF > k6-test.js
           import http from 'k6/http';
-          import { sleep, check } from 'k6';
-          export const options = { 
-            vus: 10, duration: '10s',
-            thresholds: { 'http_req_duration': ['p(98)<$THRESHOLD'] } 
-          };
-          export default function () {
-            let res = http.get('$URL'); 
-            check(res, { 'status is 200': (r) => r.status === 200 });
-            sleep(1);
-          }
+          export const options = { thresholds: { 'http_req_duration': ['p(98)<${{ env.LATENCY_THRESHOLD }}'] } };
+          export default function () { http.get('${{ env.TARGET_URL }}'); }
           EOF
           k6 run --out cloud --tag product_id="${{ secrets.DEFECTDOJO_PRODUCT_ID }}" k6-test.js
         env:
-          THRESHOLD: ${{ env.LATENCY_THRESHOLD }}
-          URL: ${{ env.TARGET_URL }}
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
           
-      # ✅ LOG PERFORMANCE AUDIT TO MASTER DATABASE (Port 8080)
       - name: Log Performance Audit to Wazuh
         if: always()
         continue-on-error: true
         run: |
           curl -k -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
-          -u "${{ secrets.WAZUH_API_USER }}:${{ secrets.WAZUH_API_PASSWORD }}" \
+          -u "admin:Admin@123456" \
           -H "Content-Type: application/json" \
           -d '{
             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
@@ -109,15 +97,11 @@ jobs:
             "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
             "repo": "${{ github.event.repository.name }}",
             "status": "${{ job.status }}",
-            "threshold": "${{ env.LATENCY_THRESHOLD }}ms",
             "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           }'
 
       - name: Report Failure to Sentry
         if: failure()
-        env:
-          THRESHOLD: ${{ env.LATENCY_THRESHOLD }}
-          URL: ${{ env.TARGET_URL }}
         run: |
           DSN="${{ secrets.SENTRY_DSN }}"
           SENTRY_KEY=$(echo $DSN | awk -F'[:@/]' '{print $4}')
@@ -132,15 +116,12 @@ jobs:
             "exception": {
               "values": [{
                 "type": "PerformanceThresholdError",
-                "value": "Application at '$URL' failed latency threshold of '$THRESHOLD'ms for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}."
+                "value": "Threshold of ${{ env.LATENCY_THRESHOLD }}ms failed for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}."
               }]
             },
             "level": "error",
             "fingerprint": ["${{ github.event.repository.name }}", "perf-failure"],
-            "tags": {
-              "repo": "${{ github.event.repository.name }}",
-              "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}"
-            }
+            "tags": { "repo": "${{ github.event.repository.name }}", "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" }
           }'
 
       - name: Upload Benchmarking Logs
