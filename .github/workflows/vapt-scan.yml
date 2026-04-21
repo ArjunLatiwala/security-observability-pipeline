@@ -32,7 +32,7 @@ jobs:
         continue-on-error: true
         run: |
           curl -k -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
-          -u "admin:Admin@123456" \
+          -u "admin:SecretPassword" \
           -H "Content-Type: application/json" \
           -d '{
             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
