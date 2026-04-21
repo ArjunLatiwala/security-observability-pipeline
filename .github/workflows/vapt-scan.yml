@@ -8,7 +8,7 @@ env:
   TARGET_URL: 'https://husaintrivedi.site'
   LATENCY_THRESHOLD: '10' # Forces failure to verify Sentry and Audit logs
   # 🎯 UPDATED WITH YOUR NEW IP
-  WAZUH_INDEXER_URL: 'https://35.200.203.148:8080' 
+  WAZUH_INDEXER_URL: 'https://35.200.203.148:9200' 
 
 jobs:
   # ==========================================
