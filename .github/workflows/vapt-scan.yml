@@ -3,12 +3,10 @@ name: Step 4 & 5 - Final Scalable Enterprise Architecture
 on:
   workflow_dispatch:
 
-# 🌍 GLOBAL CONFIGURATION
 env:
   TARGET_URL: 'https://husaintrivedi.site'
-  LATENCY_THRESHOLD: '10' # Forces failure to verify Sentry and Audit logs
-  # 🎯 UPDATED WITH YOUR NEW IP
-  WAZUH_INDEXER_URL: 'https://35.200.203.148:8080' 
+  LATENCY_THRESHOLD: '10'
+  WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
 
 jobs:
   # ==========================================
@@ -27,21 +25,24 @@ jobs:
           fail_action: false
           cmd_options: '-a -j -r report_html.html -J report_json.json'
 
-      - name: Log Security Audit to Wazuh
+      - name: Log Security Audit to Wazuh Indexer
         if: always()
         continue-on-error: true
         run: |
-          curl -k -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
-          -u "admin:SecretPassword" \
-          -H "Content-Type: application/json" \
-          -d '{
-            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "event_type": "SECURITY_VAPT_SCAN",
-            "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-            "repo": "${{ github.event.repository.name }}",
-            "status": "${{ job.status }}",
-            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          }'
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          RESPONSE=$(curl -k -s --connect-timeout 10 --max-time 15 \
+            -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
+            -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"timestamp\": \"$TIMESTAMP\",
+              \"event_type\": \"SECURITY_VAPT_SCAN\",
+              \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
+              \"repo\": \"${{ github.event.repository.name }}\",
+              \"status\": \"${{ job.status }}\",
+              \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+            }")
+          echo "Wazuh response: $RESPONSE"
 
       - name: Upload Security Reports
         if: always()
@@ -53,12 +54,12 @@ jobs:
             report_json.json
 
   # ==========================================
-  # JOB 2: STEP 5 - Benchmarking + Sentry + Grafana
+  # JOB 2: STEP 5 - Benchmarking + Sentry
   # ==========================================
   benchmarking_job:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code 
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Tools (k6 & AB)
@@ -83,22 +84,27 @@ jobs:
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
-          
-      - name: Log Performance Audit to Wazuh
+
+      - name: Log Performance Audit to Wazuh Indexer
         if: always()
         continue-on-error: true
         run: |
-          curl -k -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
-          -u "admin:Admin@123456" \
-          -H "Content-Type: application/json" \
-          -d '{
-            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "event_type": "PERFORMANCE_BENCHMARK",
-            "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-            "repo": "${{ github.event.repository.name }}",
-            "status": "${{ job.status }}",
-            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          }'
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          K6_STATUS="${{ job.status }}"
+          RESPONSE=$(curl -k -s --connect-timeout 10 --max-time 15 \
+            -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
+            -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"timestamp\": \"$TIMESTAMP\",
+              \"event_type\": \"PERFORMANCE_BENCHMARK\",
+              \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
+              \"repo\": \"${{ github.event.repository.name }}\",
+              \"status\": \"$K6_STATUS\",
+              \"threshold\": \"${{ env.LATENCY_THRESHOLD }}ms\",
+              \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+            }")
+          echo "Wazuh response: $RESPONSE"
 
       - name: Report Failure to Sentry
         if: failure()
@@ -107,22 +113,25 @@ jobs:
           SENTRY_KEY=$(echo $DSN | awk -F'[:@/]' '{print $4}')
           SENTRY_HOST=$(echo $DSN | awk -F'[:@/]' '{print $5}')
           PROJECT_ID=$(echo $DSN | awk -F'[:@/]' '{print $6}')
-      
+
           curl -X POST "https://$SENTRY_HOST/api/$PROJECT_ID/store/" \
           -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$SENTRY_KEY, sentry_client=curl/1.0" \
           -H 'Content-Type: application/json' \
-          -d '{
-            "message": "Performance Regression: ${{ github.event.repository.name }}",
-            "exception": {
-              "values": [{
-                "type": "PerformanceThresholdError",
-                "value": "Threshold of ${{ env.LATENCY_THRESHOLD }}ms failed for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}."
+          -d "{
+            \"message\": \"Performance Regression: ${{ github.event.repository.name }}\",
+            \"exception\": {
+              \"values\": [{
+                \"type\": \"PerformanceThresholdError\",
+                \"value\": \"Threshold of ${{ env.LATENCY_THRESHOLD }}ms failed for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}.\"
               }]
             },
-            "level": "error",
-            "fingerprint": ["${{ github.event.repository.name }}", "perf-failure"],
-            "tags": { "repo": "${{ github.event.repository.name }}", "product_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" }
-          }'
+            \"level\": \"error\",
+            \"fingerprint\": [\"${{ github.event.repository.name }}\", \"perf-failure\"],
+            \"tags\": {
+              \"repo\": \"${{ github.event.repository.name }}\",
+              \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\"
+            }
+          }"
 
       - name: Upload Benchmarking Logs
         if: always()
@@ -130,5 +139,5 @@ jobs:
         with:
           name: performance-logs
           path: |
-            stress_results.txt
+            stress-results.txt
             k6-test.js
