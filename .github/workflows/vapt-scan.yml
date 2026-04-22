@@ -5,9 +5,12 @@ on:
 
 env:
   TARGET_URL: 'https://husaintrivedi.site'
-  LATENCY_THRESHOLD: '10'
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
   WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
+  # --- INTENTIONAL FAILURES FOR DEMO ---
+  LATENCY_THRESHOLD: '10'         # Fail: Real latency is > 10ms (Fix: set to 2000)
+  EXPECTED_STATUS: '201'          # Fail: Site returns 200, not 201 (Fix: set to 200)
+  ERROR_RATE_LIMIT: '0.0001'      # Fail: Near zero tolerance (Fix: set to 0.01 for 1%)
 
 jobs:
   # ==========================================
@@ -57,14 +60,13 @@ jobs:
       - name: Trigger Wazuh Alert via API (Security Fail)
         if: failure()
         run: |
-          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
-          
-          curl -k -s -X POST "https://35.200.203.148:55000/events" \
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
+          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
               \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=${{ github.job }} prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=${{ env.LATENCY_THRESHOLD }}ms space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Security_Scan prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=N/A space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
 
@@ -87,12 +89,30 @@ jobs:
       - name: Run Apache Bench Stress Test
         run: ab -n 500 -c 10 ${{ env.TARGET_URL }}/ | tee stress-results.txt
 
-      - name: Run k6 Load Test
+      - name: Run k6 Load Test (Industry Best Standards)
         run: |
           cat << EOF > k6-test.js
           import http from 'k6/http';
-          export const options = { thresholds: { 'http_req_duration': ['p(98)<${{ env.LATENCY_THRESHOLD }}'] } };
-          export default function () { http.get('${{ env.TARGET_URL }}'); }
+          import { check } from 'k6';
+
+          export const options = { 
+            thresholds: { 
+              // 1. Latency Signal: 98% of requests must be fast
+              'http_req_duration': ['p(98)<${{ env.LATENCY_THRESHOLD }}'],
+              // 2. Error Signal: Fail if more than 0.01% of requests error out
+              'http_req_failed': ['rate<${{ env.ERROR_RATE_LIMIT }}'] 
+            } 
+          };
+
+          export default function () { 
+            const res = http.get('${{ env.TARGET_URL }}');
+            
+            // 3. Availability Signal: Check for Content Integrity
+            check(res, {
+              'is status ${{ env.EXPECTED_STATUS }}': (r) => r.status === parseInt('${{ env.EXPECTED_STATUS }}'),
+              'body has content': (r) => r.body.length > 0,
+            });
+          }
           EOF
           k6 run --out cloud --tag product_id="${{ secrets.DEFECTDOJO_PRODUCT_ID }}" k6-test.js
         env:
@@ -121,19 +141,19 @@ jobs:
             }")
           echo "Wazuh response: $RESPONSE"
 
-      - name: Trigger Wazuh Alert via API (Performance Fail)
+      - name: Trigger Wazuh Alert via API (Reliability Fail)
         if: failure()
         run: |
-          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
-          
-          curl -k -s -X POST "https://35.200.203.148:55000/events" \
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
+          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
               \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=${{ github.job }} prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=${{ env.LATENCY_THRESHOLD }}ms space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Reliability_Check prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=${{ env.LATENCY_THRESHOLD }}ms space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
+
       - name: Report Failure to Sentry
         if: failure()
         run: |
@@ -141,20 +161,13 @@ jobs:
           SENTRY_KEY=$(echo $DSN | awk -F'[:@/]' '{print $4}')
           SENTRY_HOST=$(echo $DSN | awk -F'[:@/]' '{print $5}')
           PROJECT_ID=$(echo $DSN | awk -F'[:@/]' '{print $6}')
-
           curl -X POST "https://$SENTRY_HOST/api/$PROJECT_ID/store/" \
           -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$SENTRY_KEY, sentry_client=curl/1.0" \
           -H 'Content-Type: application/json' \
           -d "{
-            \"message\": \"Performance Regression: ${{ github.event.repository.name }}\",
-            \"exception\": {
-              \"values\": [{
-                \"type\": \"PerformanceThresholdError\",
-                \"value\": \"Threshold of ${{ env.LATENCY_THRESHOLD }}ms failed for Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}.\"
-              }]
-            },
+            \"message\": \"Reliability Regression: ${{ github.event.repository.name }}\",
             \"level\": \"error\",
-            \"fingerprint\": [\"${{ github.event.repository.name }}\", \"perf-failure\"],
+            \"fingerprint\": [\"${{ github.event.repository.name }}\", \"reliability-failure\"],
             \"tags\": {
               \"repo\": \"${{ github.event.repository.name }}\",
               \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\"
