@@ -40,6 +40,8 @@ jobs:
               \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
               \"repo\": \"${{ github.event.repository.name }}\",
               \"status\": \"${{ job.status }}\",
+              \"event_type\": \"PERFORMANCE_FAIL\",
+              \"space_id\": \"${{ secrets.GCHAT_SPACE_ID }}\", 
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }")
           echo "Wazuh response: $RESPONSE"
