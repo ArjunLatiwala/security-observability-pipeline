@@ -54,6 +54,21 @@ jobs:
           path: |
             report_html.html
             report_json.json
+            
+      - name: Trigger Wazuh Alert via API
+        if: failure()
+        run: |
+          # 1. Get Authentication Token
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
+          
+          # 2. Send the Failure Event to the Manager
+          curl -k -s -X POST "https://35.200.203.148:55000/events" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"location\": \"github-actions\",
+              \"message\": \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} status=failure space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+            }"
 
   # ==========================================
   # JOB 2: STEP 5 - Benchmarking + Sentry
@@ -107,7 +122,20 @@ jobs:
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }")
           echo "Wazuh response: $RESPONSE"
-
+      - name: Trigger Wazuh Alert via API
+        if: failure()
+        run: |
+                # 1. Get Authentication Token
+                TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
+                
+                # 2. Send the Failure Event to the Manager
+                curl -k -s -X POST "https://35.200.203.148:55000/events" \
+                  -H "Authorization: Bearer $TOKEN" \
+                  -H "Content-Type: application/json" \
+                  -d "{
+                    \"location\": \"github-actions\",
+                    \"message\": \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} status=failure space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                  }"
       - name: Report Failure to Sentry
         if: failure()
         run: |
