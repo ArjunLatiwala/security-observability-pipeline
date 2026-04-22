@@ -57,16 +57,14 @@ jobs:
       - name: Trigger Wazuh Alert via API (Security Fail)
         if: failure()
         run: |
-          # 1. Get Authentication Token
-          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
           
-          # 2. Send the Failure Event (Corrected format: Array of Strings)
-          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
+          curl -k -s -X POST "https://35.200.203.148:55000/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
               \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} status=failure space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=${{ github.job }} prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=${{ env.LATENCY_THRESHOLD }}ms space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
 
@@ -126,19 +124,16 @@ jobs:
       - name: Trigger Wazuh Alert via API (Performance Fail)
         if: failure()
         run: |
-          # 1. Get Authentication Token
-          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
           
-          # 2. Send the Failure Event (Corrected format: Array of Strings)
-          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
+          curl -k -s -X POST "https://35.200.203.148:55000/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
               \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} status=failure space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=${{ github.job }} prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=${{ env.LATENCY_THRESHOLD }}ms space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
-
       - name: Report Failure to Sentry
         if: failure()
         run: |
