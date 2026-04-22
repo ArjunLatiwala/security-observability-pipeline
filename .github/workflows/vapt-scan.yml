@@ -7,6 +7,7 @@ env:
   TARGET_URL: 'https://husaintrivedi.site'
   LATENCY_THRESHOLD: '10'
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
+  WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
 
 jobs:
   # ==========================================
@@ -40,8 +41,6 @@ jobs:
               \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
               \"repo\": \"${{ github.event.repository.name }}\",
               \"status\": \"${{ job.status }}\",
-              \"event_type\": \"PERFORMANCE_FAIL\",
-              \"space_id\": \"${{ secrets.GCHAT_SPACE_ID }}\", 
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }")
           echo "Wazuh response: $RESPONSE"
@@ -55,19 +54,20 @@ jobs:
             report_html.html
             report_json.json
             
-      - name: Trigger Wazuh Alert via API
+      - name: Trigger Wazuh Alert via API (Security Fail)
         if: failure()
         run: |
           # 1. Get Authentication Token
-          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
           
-          # 2. Send the Failure Event to the Manager
-          curl -k -s -X POST "https://35.200.203.148:55000/events" \
+          # 2. Send the Failure Event (Corrected format: Array of Strings)
+          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
-              \"location\": \"github-actions\",
-              \"message\": \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} status=failure space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              \"events\": [
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} status=failure space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              ]
             }"
 
   # ==========================================
@@ -122,20 +122,23 @@ jobs:
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }")
           echo "Wazuh response: $RESPONSE"
-      - name: Trigger Wazuh Alert via API
+
+      - name: Trigger Wazuh Alert via API (Performance Fail)
         if: failure()
         run: |
-                # 1. Get Authentication Token
-                TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
-                
-                # 2. Send the Failure Event to the Manager
-                curl -k -s -X POST "https://35.200.203.148:55000/events" \
-                  -H "Authorization: Bearer $TOKEN" \
-                  -H "Content-Type: application/json" \
-                  -d "{
-                    \"location\": \"github-actions\",
-                    \"message\": \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} status=failure space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-                  }"
+          # 1. Get Authentication Token
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
+          
+          # 2. Send the Failure Event (Corrected format: Array of Strings)
+          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"events\": [
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} status=failure space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              ]
+            }"
+
       - name: Report Failure to Sentry
         if: failure()
         run: |
