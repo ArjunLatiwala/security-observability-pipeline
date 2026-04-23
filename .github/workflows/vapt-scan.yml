@@ -119,31 +119,45 @@ jobs:
               \"threshold\": \"${{ env.LATENCY_THRESHOLD }}ms\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
-
-      - name: Trigger Wazuh Alert via API (Pipe-Separated Format)
+      - name: Trigger Wazuh Alert via API (Python Safe Extraction)
         if: failure()
         run: |
-          # 1. Safely extract values using 'avg' (which k6 always generates)
-          if [ -f result.json ]; then
-            ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
-            ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
-            # k6 check fails are located here:
-            STATUS_FAIL=$(jq -r '.root_group.checks[0].fails // 0' result.json)
-          else
-            ACTUAL_P98=0; ACTUAL_ERR=1; STATUS_FAIL=1;
-          fi
+          # 1. OUTSIDE THE BOX: Use Python to safely read the file. 
+          # This is 100% crash-proof and bypasses all jq errors.
+          METRICS=$(python3 -c "
+          import json
+          try:
+              with open('result.json') as f:
+                  d = json.load(f)
+              m = d.get('metrics', {})
+              # Get average latency (defaults to 0)
+              lat = m.get('http_req_duration', {}).get('values', {}).get('avg', 0)
+              # Get error rate (defaults to 0)
+              err = m.get('http_req_failed', {}).get('values', {}).get('rate', 0)
+              # Get checks failed (defaults to 1 if we can't find it so an alert triggers)
+              chk = m.get('checks', {}).get('values', {}).get('fails', 1)
+              print(f'{int(lat)} {float(err)} {int(chk)}')
+          except Exception:
+              print('0 1.0 1') # Absolute fallback if k6 completely died
+          ")
 
-          # 2. Authenticate
+          # 2. Read the safe Python output into Bash variables
+          read ACTUAL_P98 ACTUAL_ERR STATUS_FAIL <<< $METRICS
+
+          # 3. Get Wazuh Token (jq is safe here because Wazuh API never changes shape)
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
           
-          # 3. Create the stable Pipe String
+          # 4. Build the Pipe String
           PAYLOAD="PIPELINE_ALERT_TRIGGER|${{ github.event.repository.name }}|${{ secrets.DEFECTDOJO_PRODUCT_ID }}|${ACTUAL_P98}|${{ env.LATENCY_THRESHOLD }}|${ACTUAL_ERR}|${{ env.ERROR_RATE_LIMIT }}|${STATUS_FAIL}|${{ env.EXPECTED_STATUS }}|${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ secrets.GCHAT_SPACE_ID }}"
           
-          # 4. Send to Wazuh
+          # 5. Send to Wazuh
           curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"events\":[\"$PAYLOAD\"]}"
+            -d "{\"events\": [\"$PAYLOAD\"]}"
+            
+          # Ensure GitHub marks the step as failed
+          exit 1
 
       - name: Report Failure to Sentry
         if: failure()
