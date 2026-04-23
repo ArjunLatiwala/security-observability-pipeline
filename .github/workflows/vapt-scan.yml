@@ -8,9 +8,9 @@ env:
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
   WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
   # --- INTENTIONAL FAILURES FOR DEMO ---
-  LATENCY_THRESHOLD: '10'         # Fail: Real latency > 10ms
-  EXPECTED_STATUS: '201'          # Fail: Site is 200, we want 201
-  ERROR_RATE_LIMIT: '0.0001'      # Fail: Tiny threshold
+  LATENCY_THRESHOLD: 10          # Fail: Real latency > 10ms
+  EXPECTED_STATUS: 201           # Fail: Site is 200, we want 201
+  ERROR_RATE_LIMIT: 0.0001       # Fail: Tiny threshold
 
 jobs:
   security_vapt_job:
@@ -60,27 +60,32 @@ jobs:
 
       - name: Run k6 Load Test
         id: k6_run
-        # REMOVED continue-on-error: true (So it fails red in the UI)
         run: |
-          cat << EOF > k6-test.js
+          # We create the JS file using a safer method to avoid syntax errors
+          cat << 'EOF' > k6-test.js
           import http from 'k6/http';
           import { check } from 'k6';
           export const options = { 
             thresholds: { 
-              'http_req_duration': ['p(98)<${{ env.LATENCY_THRESHOLD }}'],
-              'http_req_failed': ['rate<${{ env.ERROR_RATE_LIMIT }}'],
-              'checks': ['rate==1.0'] # <--- NEW: Fail test if ANY check (status code) fails
+              'http_req_duration': ['p(98)<' + __ENV.LATENCY_LIMIT],
+              'http_req_failed': ['rate<' + __ENV.ERROR_LIMIT],
+              'checks': ['rate==1.0']
             } 
           };
           export default function () { 
-            const res = http.get('${{ env.TARGET_URL }}');
-            check(res, { 'is status ${{ env.EXPECTED_STATUS }}': (r) => r.status === parseInt('${{ env.EXPECTED_STATUS }}') });
+            const res = http.get(__ENV.MY_URL);
+            check(res, { 'status_is_correct': (r) => r.status === parseInt(__ENV.EXPECTED_ST) });
           }
           EOF
           k6 run --summary-export=result.json k6-test.js
+        env:
+          MY_URL: ${{ env.TARGET_URL }}
+          LATENCY_LIMIT: ${{ env.LATENCY_THRESHOLD }}
+          ERROR_LIMIT: ${{ env.ERROR_RATE_LIMIT }}
+          EXPECTED_ST: ${{ env.EXPECTED_STATUS }}
 
       - name: Log Performance Audit to Wazuh Indexer
-        if: always() # This ensures the database log is always saved
+        if: always()
         run: |
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
@@ -95,27 +100,35 @@ jobs:
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
 
-      - name: Trigger Wazuh Alert via API (Manual String Format)
-        if: failure() # Runs only if k6 fails
+      - name: Trigger Wazuh Alert via API (Detailed Analysis)
+        if: failure()
         run: |
-          # 1. Extract values
-          ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
-          ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
-          STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
+          # Check if results file exists, otherwise set defaults
+          if [ -f result.json ]; then
+            ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
+            ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
+            STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
+          else
+            ACTUAL_P98=0; ACTUAL_ERR=1; STATUS_FAIL=1;
+          fi
 
-          # 2. Build Analysis Analysis
           BREACHES=""
           if [ "$ACTUAL_P98" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then 
             BREACHES="${BREACHES}* Performance Regression: Site responded at ${ACTUAL_P98}ms (Limit ${{ env.LATENCY_THRESHOLD }}ms). "
           fi
-          if [ "$ACTUAL_ERR" != "0" ]; then
+          
+          # Using awk for decimal comparison safety
+          IS_ERR=$(awk -v a="$ACTUAL_ERR" -v b="${{ env.ERROR_RATE_LIMIT }}" 'BEGIN{print(a>b?1:0)}')
+          if [ "$IS_ERR" -eq 1 ]; then
             BREACHES="${BREACHES}* Reliability Failure: Detected unexpected error rate (Limit ${{ env.ERROR_RATE_LIMIT }}). "
           fi
+          
           if [ "$STATUS_FAIL" -gt 0 ]; then
             BREACHES="${BREACHES}* Availability Failure: Found status 200 (Expected ${{ env.EXPECTED_STATUS }}). "
           fi
 
-          # 3. Get Token and Send (Using the String format we know Rule 100101 likes)
+          if [ -z "$BREACHES" ]; then BREACHES="* System Error: k6 testing engine failed to initialize."; fi
+
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
           
           curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
@@ -123,6 +136,6 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{
               \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Reliability prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} breaches='${BREACHES}' space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Performance_Audit prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} breaches='${BREACHES}' space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
