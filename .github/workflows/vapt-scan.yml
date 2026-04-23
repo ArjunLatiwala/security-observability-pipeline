@@ -57,18 +57,38 @@ jobs:
             report_html.html
             report_json.json
             
-      - name: Trigger Wazuh Alert via API (Security Fail)
+      - name: Trigger Wazuh Alert via API
         if: failure()
         run: |
+          # 1. Extract values
+          ACTUAL_P98=$(jq '.metrics.http_req_duration.values."p(98)"' result.json | cut -d. -f1)
+          ACTUAL_ERR=$(jq '.metrics.http_req_failed.values.rate' result.json)
+          STATUS_FAIL=$(jq '.metrics.checks.values.fails' result.json)
+
+          # 2. Build Descriptive Analysis (1 line each)
+          BREACHES=""
+          if [ "$ACTUAL_P98" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then 
+            BREACHES="${BREACHES}• *Latency:* ${ACTUAL_P98}ms (Limit ${{ env.LATENCY_THRESHOLD }}ms) - Website is too slow for users, resulting in a degraded experience. "
+          fi
+          if (( $(echo "$ACTUAL_ERR > ${{ env.ERROR_RATE_LIMIT }}" | bc -l) )); then
+            BREACHES="${BREACHES}• *Errors:* ${ACTUAL_ERR} (Limit ${{ env.ERROR_RATE_LIMIT }}) - Server is unstable and may be dropping connections or returning 500s. "
+          fi
+          if [ "$STATUS_FAIL" -gt 0 ]; then
+            BREACHES="${BREACHES}• *Status:* Found 200 (Expected ${{ env.EXPECTED_STATUS }}) - Server is alive but returned an incorrect status, indicating a logic error. "
+          fi
+
+          # 3. Get Token and Send
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
+          
           curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
               \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Security_Scan prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=N/A space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Performance_Reliability_Audit breaches='${BREACHES}' prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
+          exit 1
 
   # ==========================================
   # JOB 2: STEP 5 - Benchmarking + Sentry
@@ -141,18 +161,38 @@ jobs:
             }")
           echo "Wazuh response: $RESPONSE"
 
-      - name: Trigger Wazuh Alert via API (Reliability Fail)
+      - name: Trigger Wazuh Alert via API
         if: failure()
         run: |
+          # 1. Extract values
+          ACTUAL_P98=$(jq '.metrics.http_req_duration.values."p(98)"' result.json | cut -d. -f1)
+          ACTUAL_ERR=$(jq '.metrics.http_req_failed.values.rate' result.json)
+          STATUS_FAIL=$(jq '.metrics.checks.values.fails' result.json)
+
+          # 2. Build Descriptive Analysis (1 line each)
+          BREACHES=""
+          if [ "$ACTUAL_P98" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then 
+            BREACHES="${BREACHES}• *Latency:* ${ACTUAL_P98}ms (Limit ${{ env.LATENCY_THRESHOLD }}ms) - Website is too slow for users, resulting in a degraded experience. "
+          fi
+          if (( $(echo "$ACTUAL_ERR > ${{ env.ERROR_RATE_LIMIT }}" | bc -l) )); then
+            BREACHES="${BREACHES}• *Errors:* ${ACTUAL_ERR} (Limit ${{ env.ERROR_RATE_LIMIT }}) - Server is unstable and may be dropping connections or returning 500s. "
+          fi
+          if [ "$STATUS_FAIL" -gt 0 ]; then
+            BREACHES="${BREACHES}• *Status:* Found 200 (Expected ${{ env.EXPECTED_STATUS }}) - Server is alive but returned an incorrect status, indicating a logic error. "
+          fi
+
+          # 3. Get Token and Send
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
+          
           curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
               \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Reliability_Check prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=${{ env.LATENCY_THRESHOLD }}ms space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Performance_Reliability_Audit breaches='${BREACHES}' prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
+          exit 1
 
       - name: Report Failure to Sentry
         if: failure()
