@@ -7,9 +7,9 @@ env:
   TARGET_URL: 'https://husaintrivedi.site'
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
   WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
-  LATENCY_THRESHOLD: '2000'       # 2 seconds P98
-  EXPECTED_STATUS: '200'          # FIXED: Site returns 200, not 201
-  ERROR_RATE_LIMIT: '0.05'        # 5% error tolerance
+  LATENCY_THRESHOLD: '10'       # 2 seconds P98
+  EXPECTED_STATUS: '201'          # FIXED: Site returns 200, not 201
+  ERROR_RATE_LIMIT: '0.0001'        # 5% error tolerance
 
 jobs:
   security_vapt_job:
