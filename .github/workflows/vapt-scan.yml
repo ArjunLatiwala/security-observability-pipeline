@@ -70,7 +70,7 @@ jobs:
       - name: Install k6
         run: |
           curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
-          echo "deb[signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update && sudo apt-get install -y k6
 
       - name: Run Apache Bench Stress Test
@@ -123,10 +123,14 @@ jobs:
       - name: Trigger Wazuh Alert via API (Pipe-Separated Format)
         if: failure()
         run: |
-          # 1. Safely extract values from k6 result (defaults to 0 if missing)
-          ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
-          ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
-          STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
+          # 1. Safely check if k6 actually generated a file
+          if [ -f result.json ]; then
+            ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
+            ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
+            STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
+          else
+            ACTUAL_P98=0; ACTUAL_ERR=1; STATUS_FAIL=1;
+          fi
 
           # 2. Authenticate
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
@@ -138,7 +142,7 @@ jobs:
           curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"events\": [\"$PAYLOAD\"]}"
+            -d "{\"events\":[\"$PAYLOAD\"]}"
 
       - name: Report Failure to Sentry
         if: failure()
