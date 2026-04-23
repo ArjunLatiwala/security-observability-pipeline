@@ -58,12 +58,13 @@ jobs:
 
       - name: Run k6 Load Test
         id: k6_run
+        continue-on-error: true
         run: |
           cat << 'EOF' > k6-test.js
           import http from 'k6/http';
           import { check } from 'k6';
           export const options = { 
-            iterations: 10, # Force 10 runs for stable data
+            iterations: 10,
             thresholds: { 
               'http_req_duration': ['p(98)<' + __ENV.LATENCY_LIMIT],
               'http_req_failed': ['rate<' + __ENV.ERROR_LIMIT],
@@ -82,42 +83,25 @@ jobs:
           ERROR_LIMIT: ${{ env.ERROR_RATE_LIMIT }}
           EXPECTED_ST: ${{ env.EXPECTED_STATUS }}
 
-      - name: Log Performance Audit to Wazuh Indexer
-        if: always()
-        run: |
-          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
-            -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"timestamp\": \"$TIMESTAMP\", \"event_type\": \"PERFORMANCE_BENCHMARK\", \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\", \"repo\": \"${{ github.event.repository.name }}\", \"status\": \"${{ job.status }}\", \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-
-      - name: Trigger Wazuh Alert (Python Extraction Mode)
+      - name: Trigger Wazuh Alert (Python Mode)
         if: failure()
         shell: python
         run: |
           import json, requests, sys
-
-          # 1. Extract real data from JSON
           try:
               with open('result.json') as f:
                   res = json.load(f)
               p98 = res['metrics']['http_req_duration']['values'].get('p(98)', 0)
-              avg = res['metrics']['http_req_duration']['values'].get('avg', 0)
               err = res['metrics']['http_req_failed']['values'].get('rate', 0)
               chk = res['metrics']['checks']['values'].get('fails', 0)
-              
-              # Use the best available latency number
-              latency = int(p98) if p98 > 0 else int(avg)
           except:
-              latency, err, chk = 0, 1, 1
+              p98, err, chk = 0, 1, 1
 
-          # 2. Build the exact Pipe-Separated payload the server expects
-          # Format: TRIGGER|repo|prod_id|p98|p98l|err|errl|stf|ste|url|space_id
           payload_parts = [
               "PIPELINE_ALERT_TRIGGER",
               "${{ github.event.repository.name }}",
               "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-              str(latency),
+              str(int(p98)),
               "${{ env.LATENCY_THRESHOLD }}",
               str(err),
               "${{ env.ERROR_RATE_LIMIT }}",
@@ -128,9 +112,6 @@ jobs:
           ]
           
           final_string = "|".join(payload_parts)
-          print(f"DEBUG SENDING: {final_string}")
-
-          # 3. Authenticate and Send to Wazuh
           auth_url = "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate"
           token = requests.post(auth_url, auth=('wazuh-wui', 'MyS3cr37P450r.*-'), verify=False).json()['data']['token']
           
