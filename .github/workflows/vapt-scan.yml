@@ -103,38 +103,39 @@ jobs:
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
 
-      - name: Trigger Wazuh Alert via API (Detailed Analysis)
+      - name: Trigger Wazuh Alert via API (Comprehensive)
         if: failure()
         run: |
-          # 1. Extract results from the JSON file
-          ACTUAL_P98=$(jq '.metrics.http_req_duration.values."p(98)"' result.json | cut -d. -f1)
-          ACTUAL_ERR=$(jq '.metrics.http_req_failed.values.rate' result.json)
-          STATUS_FAIL=$(jq '.metrics.checks.values.fails' result.json)
+          # 1. Extract values safely
+          ACTUAL_P98=$(jq '.metrics.http_req_duration.values."p(98)"' result.json | cut -d. -f1 || echo "0")
+          ACTUAL_ERR=$(jq '.metrics.http_req_failed.values.rate' result.json || echo "0")
+          STATUS_FAIL=$(jq '.metrics.checks.values.fails' result.json || echo "0")
 
-          # 2. Build multi-line Failure Analysis
+          # 2. Build Analysis (Single-quoted to handle spaces in Python)
           BREACHES=""
           if [ "$ACTUAL_P98" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then 
-            BREACHES="${BREACHES}• *Latency:* ${ACTUAL_P98}ms (Limit ${{ env.LATENCY_THRESHOLD }}ms) - Website is too slow for users. "
+            BREACHES="${BREACHES}• *Latency:* ${ACTUAL_P98}ms (Limit ${{ env.LATENCY_THRESHOLD }}ms) - Website is too slow for users, resulting in a degraded experience. "
           fi
           if [ "$ACTUAL_ERR" != "0" ]; then
-            BREACHES="${BREACHES}• *Errors:* Detected (Limit ${{ env.ERROR_RATE_LIMIT }}) - Server is unstable. "
+            BREACHES="${BREACHES}• *Errors:* Detected (Limit ${{ env.ERROR_RATE_LIMIT }}) - Server is unstable and may be dropping connections. "
           fi
           if [ "$STATUS_FAIL" -gt 0 ]; then
-            BREACHES="${BREACHES}• *Status:* Found 200 (Expected ${{ env.EXPECTED_STATUS }}) - Logic error in deployment. "
+            BREACHES="${BREACHES}• *Status:* Found 200 (Expected ${{ env.EXPECTED_STATUS }}) - Server is alive but returned an incorrect status code. "
           fi
 
-          # 3. Get Wazuh Token
+          # 3. Get Token
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
           
-          # 4. Send Trigger
+          # 4. Send Trigger (Notice the single quotes around $BREACHES)
           curl -k -s -X POST "https://35.200.203.148:55000/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
               \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Reliability_Check breaches='${BREACHES}' prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Benchmarking prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} breaches='${BREACHES}' space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
+          exit 1
 
       - name: Report Failure to Sentry
         if: failure()
