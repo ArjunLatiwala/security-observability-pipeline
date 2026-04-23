@@ -146,7 +146,8 @@ jobs:
                 \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Reliability_Audit prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} breaches='${BREACHES}' space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
-          exit 1      - name: Report Failure to Sentry
+          exit 1      
+      - name: Report Failure to Sentry
         if: failure()
         run: |
           DSN="${{ secrets.SENTRY_DSN }}"
