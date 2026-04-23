@@ -100,42 +100,24 @@ jobs:
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
 
-      - name: Trigger Wazuh Alert via API (Detailed Analysis)
+      - name: Trigger Wazuh Alert via API (Raw Data Mode)
         if: failure()
         run: |
-          # Check if results file exists, otherwise set defaults
-          if [ -f result.json ]; then
-            ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
-            ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
-            STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
-          else
-            ACTUAL_P98=0; ACTUAL_ERR=1; STATUS_FAIL=1;
-          fi
+          # 1. Extract raw numbers safely (defaults to 0 if null/missing)
+          ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
+          ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
+          STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
 
-          BREACHES=""
-          if [ "$ACTUAL_P98" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then 
-            BREACHES="${BREACHES}* Performance Regression: Site responded at ${ACTUAL_P98}ms (Limit ${{ env.LATENCY_THRESHOLD }}ms). "
-          fi
-          
-          # Using awk for decimal comparison safety
-          IS_ERR=$(awk -v a="$ACTUAL_ERR" -v b="${{ env.ERROR_RATE_LIMIT }}" 'BEGIN{print(a>b?1:0)}')
-          if [ "$IS_ERR" -eq 1 ]; then
-            BREACHES="${BREACHES}* Reliability Failure: Detected unexpected error rate (Limit ${{ env.ERROR_RATE_LIMIT }}). "
-          fi
-          
-          if [ "$STATUS_FAIL" -gt 0 ]; then
-            BREACHES="${BREACHES}* Availability Failure: Found status 200 (Expected ${{ env.EXPECTED_STATUS }}). "
-          fi
-
-          if [ -z "$BREACHES" ]; then BREACHES="* System Error: k6 testing engine failed to initialize."; fi
-
+          # 2. Get Wazuh Token
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
           
+          # 3. Send ONLY raw metrics (No spaces, no quotes to break the string!)
           curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
               \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Performance_Audit prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} breaches='${BREACHES}' space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} actual_p98=${ACTUAL_P98} limit_p98=${{ env.LATENCY_THRESHOLD }} actual_err=${ACTUAL_ERR} limit_err=${{ env.ERROR_RATE_LIMIT }} status_fail=${STATUS_FAIL} expected_st=${{ env.EXPECTED_STATUS }} space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
+          exit 1
