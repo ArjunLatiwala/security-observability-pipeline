@@ -99,18 +99,24 @@ jobs:
               \"status\": \"${{ job.status }}\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
-      - name: Trigger Wazuh Alert via API
+      - name: Trigger Wazuh Alert via API (Full Data)
         if: failure()
         run: |
-          # 1. Get Authentication Token
+          # 1. Extract raw numbers safely (defaults to 0 if k6 didn't generate them)
+          ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
+          ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
+          STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
+
+          # 2. Get Authentication Token
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
           
-          # 2. Send the Simple Trigger String (Yesterday's Working Format)
+          # 3. Send the Comprehensive Trigger String
+          # Note: We added prod_id, p98, p98l, err, errl, stf, and ste
           curl -k -s -X POST "https://35.200.203.148:55000/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
               \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} status=failure space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} p98=${ACTUAL_P98} p98l=${{ env.LATENCY_THRESHOLD }} err=${ACTUAL_ERR} errl=${{ env.ERROR_RATE_LIMIT }} stf=${STATUS_FAIL} ste=${{ env.EXPECTED_STATUS }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} space_id=${{ secrets.GCHAT_SPACE_ID }}\"
               ]
             }"
