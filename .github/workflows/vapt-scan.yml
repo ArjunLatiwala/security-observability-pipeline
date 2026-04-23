@@ -118,54 +118,46 @@ jobs:
               \"status\": \"${{ job.status }}\",
               \"threshold\": \"${{ env.LATENCY_THRESHOLD }}ms\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-            }"
+                  }"
       - name: Send Google Chat Alert on Failure
         if: failure()
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
       
-          # --- Extract actual metrics from k6 result ---
           ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 25' result.json | awk '{print int($1)}')
           ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0.05' result.json)
           ACTUAL_STATUS=$(jq -r '.metrics.checks.values.rate // 0' result.json)
       
-          # --- Thresholds from env ---
           LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
           ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
           EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
       
-          # --- Build failure lines dynamically ---
           FAILURES=""
-      
           if (( ACTUAL_LAT > LAT_LIMIT )); then
-            FAILURES="${FAILURES}• Latency: ${ACTUAL_LAT}ms (Limit ${LAT_LIMIT}ms) - Website is too slow for users, resulting in a degraded experience.\n"
+            FAILURES="${FAILURES}• Latency: ${ACTUAL_LAT}ms (Limit ${LAT_LIMIT}ms) - Website is too slow for users, resulting in a degraded experience."$'\n'
           fi
-      
           if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
-            FAILURES="${FAILURES}• Errors: ${ACTUAL_ERR} (Limit ${ERR_LIMIT}) - Server is unstable and may be dropping connections or returning 500s.\n"
+            FAILURES="${FAILURES}• Errors: ${ACTUAL_ERR} (Limit ${ERR_LIMIT}) - Server is unstable and may be dropping connections or returning 500s."$'\n'
           fi
-      
-          # Check if status check failed (checks.rate < 1.0 means status assertion failed)
           if (( $(echo "$ACTUAL_STATUS < 1.0" | bc -l) )); then
-            FAILURES="${FAILURES}• Status: Found 200 (Expected ${EXPECTED_ST}) - Server is alive but returned an incorrect status, indicating a logic error.\n"
+            FAILURES="${FAILURES}• Status: Found 200 (Expected ${EXPECTED_ST}) - Server is alive but returned an incorrect status, indicating a logic error."$'\n'
           fi
-      
-          # Fallback if result.json was missing / all checks passed but something else failed
           if [ -z "$FAILURES" ]; then
-            FAILURES="• Pipeline step failed. Check the GitHub Actions logs for details.\n"
+            FAILURES="• Pipeline step failed. Check the GitHub Actions logs for details."$'\n'
           fi
       
-          MESSAGE="🚨 *CRITICAL: PIPELINE FAILURE DETECTED*\n"
-          MESSAGE="${MESSAGE}📂 Repository: ${{ github.event.repository.name }}\n"
-          MESSAGE="${MESSAGE}🆔 Product ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}\n"
-          MESSAGE="${MESSAGE}⚠️ *Failure Analysis:*\n"
-          MESSAGE="${MESSAGE}${FAILURES}"
-          MESSAGE="${MESSAGE}\n🔗 Action: <${RUN_URL}|Investigate Logs in GitHub>\n"
-          MESSAGE="${MESSAGE}🖥 Audit Hub: <https://35.200.203.148|Wazuh Dashboard>"
+          # Build message using printf for clean newlines
+          MESSAGE=$(printf '🚨 *CRITICAL: PIPELINE FAILURE DETECTED*\n📂 Repository: %s\n🆔 Product ID: %s\n⚠️ *Failure Analysis:*\n%s\n🔗 Action: <%s|Investigate Logs in GitHub>\n🖥 Audit Hub: <https://35.200.203.148|Wazuh Dashboard>' \
+            "${{ github.event.repository.name }}" \
+            "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            "$FAILURES" \
+            "$RUN_URL")
       
-          curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"text\": \"${MESSAGE}\"}"
+          # Use jq to safely encode the message into JSON — no manual escaping
+          jq -n --arg text "$MESSAGE" '{"text": $text}' | \
+            curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
+              -H "Content-Type: application/json" \
+              -d @-
       
           exit 1
 
