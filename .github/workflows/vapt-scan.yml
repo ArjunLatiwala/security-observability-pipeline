@@ -84,7 +84,6 @@ jobs:
             });
           }
           EOF
-          # ADDED --summary-export FLAG BELOW
           k6 run --summary-export=result.json k6-test.js
 
       - name: Log Performance Audit to Wazuh Indexer
@@ -103,7 +102,7 @@ jobs:
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
 
-      - name: Trigger Wazuh Alert via API (Comprehensive)
+      - name: Trigger Wazuh Alert via API (Fixed)
         if: failure()
         run: |
           # 1. Extract values with absolute safety (defaults to 0 if null/missing)
@@ -135,18 +134,21 @@ jobs:
             BREACHES="* System Failure: The testing engine terminated unexpectedly or a network timeout occurred. "
           fi
 
-          # 4. Get Token and Send
+          # 4. Get Token and Send CORRECT EVENT FORMAT TO WAZUH
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
           
-          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
+          # FIXED: Send to proper alert ingestion endpoint with correct JSON structure
+          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/logtest" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
-              \"events\": [
-                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Reliability_Audit prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} breaches='${BREACHES}' space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-              ]
-            }"
-          exit 1      
+              \"log_format\": \"raw\",
+              \"location\": \"github-actions-pipeline\",
+              \"log_sample\": \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Reliability_Audit prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} breaches='${BREACHES}' space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+            }" || true
+          
+          exit 1
+
       - name: Report Failure to Sentry
         if: failure()
         run: |
