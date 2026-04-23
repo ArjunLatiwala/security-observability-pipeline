@@ -122,23 +122,25 @@ jobs:
       - name: Trigger Wazuh Alert (Final Alignment)
         if: failure()
         run: |
-          # 1. Extract raw numbers safely (defaults to 25 if missing for demo visibility)
           ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values.avg // 25' result.json | awk '{print int($1)}')
           
-          # 2. Get Wazuh Token
-          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST \
+            "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
           
-          # 3. Build the payload exactly like the successful manual test
-          # Format: PIPELINE_ALERT_TRIGGER: repo=... type=... prod_id=... thresh=... url=... space_id=...
-          PAYLOAD="PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=${{ github.job }} prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=${ACTUAL_LAT} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} space_id=${{ secrets.GCHAT_SPACE_ID }}"
+          PAYLOAD=$(jq -n \
+            --arg repo "${{ github.event.repository.name }}" \
+            --arg type "${{ github.job }}" \
+            --arg prod "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            --arg thresh "${ACTUAL_LAT}" \
+            --arg url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg space "${{ secrets.GCHAT_SPACE_ID }}" \
+            '{"events": ["PIPELINE_ALERT_TRIGGER: repo=\($repo) type=\($type) prod_id=\($prod) thresh=\($thresh) url=\($url) space_id=\($space)"]}')
           
-          # 4. Send to Wazuh
           curl -k -s -X POST "https://35.200.203.148:55000/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"events\": [\"$PAYLOAD\"]}"
+            -d "$PAYLOAD"
           
-          # Force job to stay red
           exit 1
 
       - name: Report Failure to Sentry
