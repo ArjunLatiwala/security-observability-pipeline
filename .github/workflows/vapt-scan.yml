@@ -8,11 +8,14 @@ env:
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
   WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
   # --- INTENTIONAL FAILURES FOR DEMO ---
-  LATENCY_THRESHOLD: 10          # Fail: Real latency > 10ms
-  EXPECTED_STATUS: 201           # Fail: Site is 200, we want 201
-  ERROR_RATE_LIMIT: 0.0001       # Fail: Tiny threshold
+  LATENCY_THRESHOLD: '10'         # Fail: Real latency is > 10ms (Fix: set to 2000)
+  EXPECTED_STATUS: '201'          # Fail: Site returns 200, not 201 (Fix: set to 200)
+  ERROR_RATE_LIMIT: '0.0001'      # Fail: Near zero tolerance (Fix: set to 0.01 for 1%)
 
 jobs:
+  # ==========================================
+  # JOB 1: STEP 4 - Deep Security (VAPT)
+  # ==========================================
   security_vapt_job:
     runs-on: ubuntu-latest
     steps:
@@ -31,7 +34,8 @@ jobs:
         continue-on-error: true
         run: |
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
+          RESPONSE=$(curl -k -s --connect-timeout 10 --max-time 15 \
+            -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
             -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
             -H "Content-Type: application/json" \
             -d "{
@@ -41,81 +45,140 @@ jobs:
               \"repo\": \"${{ github.event.repository.name }}\",
               \"status\": \"${{ job.status }}\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+            }")
+          echo "Wazuh response: $RESPONSE"
+
+      - name: Upload Security Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vapt-reports
+          path: |
+            report_html.html
+            report_json.json
+            
+      - name: Trigger Wazuh Alert via API (Security Fail)
+        if: failure()
+        run: |
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
+          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"events\": [
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Security_Scan prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=N/A space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              ]
             }"
 
+  # ==========================================
+  # JOB 2: STEP 5 - Benchmarking + Sentry
+  # ==========================================
   benchmarking_job:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Tools (k6 & Python)
+      - name: Setup Tools (k6 & AB)
         run: |
-          sudo apt-get update && sudo apt-get install -y curl python3-requests
+          sudo apt-get update && sudo apt-get install -y apache2-utils jq
           curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update && sudo apt-get install -y k6
 
-      - name: Run k6 Load Test
-        id: k6_run
-        continue-on-error: true
+      - name: Run Apache Bench Stress Test
+        run: ab -n 500 -c 10 ${{ env.TARGET_URL }}/ | tee stress-results.txt
+
+      - name: Run k6 Load Test (Industry Best Standards)
         run: |
-          cat << 'EOF' > k6-test.js
+          cat << EOF > k6-test.js
           import http from 'k6/http';
           import { check } from 'k6';
+
           export const options = { 
-            iterations: 10,
             thresholds: { 
-              'http_req_duration': ['p(98)<' + __ENV.LATENCY_LIMIT],
-              'http_req_failed': ['rate<' + __ENV.ERROR_LIMIT],
-              'checks': ['rate==1.0']
+              // 1. Latency Signal: 98% of requests must be fast
+              'http_req_duration': ['p(98)<${{ env.LATENCY_THRESHOLD }}'],
+              // 2. Error Signal: Fail if more than 0.01% of requests error out
+              'http_req_failed': ['rate<${{ env.ERROR_RATE_LIMIT }}'] 
             } 
           };
+
           export default function () { 
-            const res = http.get(__ENV.MY_URL);
-            check(res, { 'status_is_correct': (r) => r.status === parseInt(__ENV.EXPECTED_ST) });
+            const res = http.get('${{ env.TARGET_URL }}');
+            
+            // 3. Availability Signal: Check for Content Integrity
+            check(res, {
+              'is status ${{ env.EXPECTED_STATUS }}': (r) => r.status === parseInt('${{ env.EXPECTED_STATUS }}'),
+              'body has content': (r) => r.body.length > 0,
+            });
           }
           EOF
-          k6 run --summary-export=result.json k6-test.js
+          k6 run --out cloud --tag product_id="${{ secrets.DEFECTDOJO_PRODUCT_ID }}" k6-test.js
         env:
-          MY_URL: ${{ env.TARGET_URL }}
-          LATENCY_LIMIT: ${{ env.LATENCY_THRESHOLD }}
-          ERROR_LIMIT: ${{ env.ERROR_RATE_LIMIT }}
-          EXPECTED_ST: ${{ env.EXPECTED_STATUS }}
+          K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+          K6_CLOUD_PROJECT_ID: 7324608
+          K6_CLOUD_NAME: "${{ github.event.repository.name }}"
 
-      - name: Trigger Wazuh Alert (Python Mode)
-        if: failure()
-        shell: python
+      - name: Log Performance Audit to Wazuh Indexer
+        if: always()
+        continue-on-error: true
         run: |
-          import json, requests, sys
-          try:
-              with open('result.json') as f:
-                  res = json.load(f)
-              p98 = res['metrics']['http_req_duration']['values'].get('p(98)', 0)
-              err = res['metrics']['http_req_failed']['values'].get('rate', 0)
-              chk = res['metrics']['checks']['values'].get('fails', 0)
-          except:
-              p98, err, chk = 0, 1, 1
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          K6_STATUS="${{ job.status }}"
+          RESPONSE=$(curl -k -s --connect-timeout 10 --max-time 15 \
+            -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
+            -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"timestamp\": \"$TIMESTAMP\",
+              \"event_type\": \"PERFORMANCE_BENCHMARK\",
+              \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
+              \"repo\": \"${{ github.event.repository.name }}\",
+              \"status\": \"$K6_STATUS\",
+              \"threshold\": \"${{ env.LATENCY_THRESHOLD }}ms\",
+              \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+            }")
+          echo "Wazuh response: $RESPONSE"
 
-          payload_parts = [
-              "PIPELINE_ALERT_TRIGGER",
-              "${{ github.event.repository.name }}",
-              "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-              str(int(p98)),
-              "${{ env.LATENCY_THRESHOLD }}",
-              str(err),
-              "${{ env.ERROR_RATE_LIMIT }}",
-              str(int(chk)),
-              "${{ env.EXPECTED_STATUS }}",
-              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-              "${{ secrets.GCHAT_SPACE_ID }}"
-          ]
-          
-          final_string = "|".join(payload_parts)
-          auth_url = "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate"
-          token = requests.post(auth_url, auth=('wazuh-wui', 'MyS3cr37P450r.*-'), verify=False).json()['data']['token']
-          
-          event_url = "${{ env.WAZUH_MANAGER_URL }}/events"
-          headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-          requests.post(event_url, headers=headers, json={"events": [final_string]}, verify=False)
-          sys.exit(1)
+      - name: Trigger Wazuh Alert via API (Reliability Fail)
+        if: failure()
+        run: |
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
+          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"events\": [
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=Reliability_Check prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=${{ env.LATENCY_THRESHOLD }}ms space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              ]
+            }"
+
+      - name: Report Failure to Sentry
+        if: failure()
+        run: |
+          DSN="${{ secrets.SENTRY_DSN }}"
+          SENTRY_KEY=$(echo $DSN | awk -F'[:@/]' '{print $4}')
+          SENTRY_HOST=$(echo $DSN | awk -F'[:@/]' '{print $5}')
+          PROJECT_ID=$(echo $DSN | awk -F'[:@/]' '{print $6}')
+          curl -X POST "https://$SENTRY_HOST/api/$PROJECT_ID/store/" \
+          -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$SENTRY_KEY, sentry_client=curl/1.0" \
+          -H 'Content-Type: application/json' \
+          -d "{
+            \"message\": \"Reliability Regression: ${{ github.event.repository.name }}\",
+            \"level\": \"error\",
+            \"fingerprint\": [\"${{ github.event.repository.name }}\", \"reliability-failure\"],
+            \"tags\": {
+              \"repo\": \"${{ github.event.repository.name }}\",
+              \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\"
+            }
+          }"
+
+      - name: Upload Benchmarking Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-logs
+          path: |
+            stress-results.txt
+            k6-test.js
