@@ -119,48 +119,40 @@ jobs:
               \"threshold\": \"${{ env.LATENCY_THRESHOLD }}ms\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
-      - name: Trigger Wazuh Alert (JSON Tunnel Mode)
+      - name: Trigger Wazuh Alert (Stateless Mode)
         if: failure()
         shell: python
         run: |
-          import json, requests, sys, base64
-
-          # 1. Safely extract data from k6 results
+          import json, requests, sys
+          # 1. Extract real numbers from result.json
           try:
               with open('result.json') as f:
                   res = json.load(f)
-              p98 = res['metrics']['http_req_duration']['values'].get('p(98)', res['metrics']['http_req_duration']['values'].get('avg', 0))
+              p98 = res['metrics']['http_req_duration']['values'].get('p(98)', 0)
               err = res['metrics']['http_req_failed']['values'].get('rate', 0)
               chk = res['metrics']['checks']['values'].get('fails', 0)
           except:
               p98, err, chk = 0, 1, 1
 
-          # 2. Build the JSON data packet
-          data_packet = {
-              "repo": "${{ github.event.repository.name }}",
-              "prod_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-              "p98": int(p98), "p98l": int("${{ env.LATENCY_THRESHOLD }}"),
-              "err": float(err), "errl": float("${{ env.ERROR_RATE_LIMIT }}"),
-              "stf": int(chk), "ste": "${{ env.EXPECTED_STATUS }}",
-              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-              "space_id": "${{ secrets.GCHAT_SPACE_ID }}"
-          }
+          # 2. Build the exact Pipe-Separated payload
+          payload_parts = [
+              "PIPELINE_ALERT_TRIGGER",
+              "${{ github.event.repository.name }}",
+              "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+              str(int(p98)), "${{ env.LATENCY_THRESHOLD }}",
+              str(err), "${{ env.ERROR_RATE_LIMIT }}",
+              str(int(chk)), "${{ env.EXPECTED_STATUS }}",
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "${{ secrets.GCHAT_SPACE_ID }}"
+          ]
+          final_string = "|".join(payload_parts)
 
-          # 3. Base64 encode the packet to make it shell-proof
-          encoded_data = base64.b64encode(json.dumps(data_packet).encode('utf-8')).decode('utf-8')
-          
-          # 4. Create the final log string (This is now unbreakable)
-          final_string = "PIPELINE_ALERT_JSON:" + encoded_data
-
-          # 5. Authenticate and send to Wazuh
+          # 3. Authenticate and Send
           auth_url = "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate"
           token = requests.post(auth_url, auth=('wazuh-wui', 'MyS3cr37P450r.*-'), verify=False).json()['data']['token']
-          
           event_url = "${{ env.WAZUH_MANAGER_URL }}/events"
           headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-          response = requests.post(event_url, headers=headers, json={"events": [final_string]}, verify=False)
-          
-          print("Wazuh API Response:", response.json())
+          requests.post(event_url, headers=headers, json={"events": [final_string]}, verify=False)
           sys.exit(1)
 
       - name: Report Failure to Sentry
