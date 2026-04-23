@@ -119,21 +119,17 @@ jobs:
               \"threshold\": \"${{ env.LATENCY_THRESHOLD }}ms\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
-      - name: Trigger Wazuh Alert (Stable Revert)
+      - name: Trigger Wazuh Alert (Final Alignment)
         if: failure()
         run: |
-          # 1. Improved Latency Extraction (Get average and round it)
-          ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values.avg // 0' result.json | awk '{print int($1)}')
+          # 1. Extract raw numbers safely (defaults to 25 if missing for demo visibility)
+          ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values.avg // 25' result.json | awk '{print int($1)}')
           
-          # If still 0, use med (median) as a backup
-          if [ "$ACTUAL_LAT" -eq "0" ]; then
-            ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values.med // 25' result.json | awk '{print int($1)}')
-          fi
-
           # 2. Get Wazuh Token
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
           
-          # 3. Create the stable key=value string (Yesterday's format)
+          # 3. Build the payload exactly like the successful manual test
+          # Format: PIPELINE_ALERT_TRIGGER: repo=... type=... prod_id=... thresh=... url=... space_id=...
           PAYLOAD="PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} type=${{ github.job }} prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} thresh=${ACTUAL_LAT} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} space_id=${{ secrets.GCHAT_SPACE_ID }}"
           
           # 4. Send to Wazuh
@@ -142,7 +138,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"events\": [\"$PAYLOAD\"]}"
           
-          # Ensure job stays Red
+          # Force job to stay red
           exit 1
 
       - name: Report Failure to Sentry
