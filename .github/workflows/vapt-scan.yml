@@ -99,25 +99,25 @@ jobs:
               \"status\": \"${{ job.status }}\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
-      - name: Trigger Wazuh Alert via API (Final Verified Format)
+      - name: Trigger Wazuh Alert via API (Data Extraction Fix)
         if: failure()
         run: |
-          # 1. Extract values safely
-          ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
+          # 1. Extract values using 'average' instead of 'p98' for test stability
+          ACTUAL_LATENCY=$(jq -r '.metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
           ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
           STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
 
-          # 2. Get Authentication Token
+          # Debug: Print to GitHub Console
+          echo "DEBUG: Latency=$ACTUAL_LATENCY, Errors=$ACTUAL_ERR, StatusFail=$STATUS_FAIL"
+
+          # 2. Get Token
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
           
-          # 3. Create the Pipe String (Matches the 11 parts the script expects)
-          # PIPELINE_ALERT_TRIGGER|repo|prod_id|p98|p98l|err|errl|stf|ste|url|space_id
-          PAYLOAD="PIPELINE_ALERT_TRIGGER|${{ github.event.repository.name }}|${{ secrets.DEFECTDOJO_PRODUCT_ID }}|${ACTUAL_P98}|${{ env.LATENCY_THRESHOLD }}|${ACTUAL_ERR}|${{ env.ERROR_RATE_LIMIT }}|${STATUS_FAIL}|${{ env.EXPECTED_STATUS }}|${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ secrets.GCHAT_SPACE_ID }}"
+          # 3. Send Payload (Using 'avg' for p98 to ensure the server script sees a breach)
+          PAYLOAD="PIPELINE_ALERT_TRIGGER|${{ github.event.repository.name }}|${{ secrets.DEFECTDOJO_PRODUCT_ID }}|${ACTUAL_LATENCY}|${{ env.LATENCY_THRESHOLD }}|${ACTUAL_ERR}|${{ env.ERROR_RATE_LIMIT }}|${STATUS_FAIL}|${{ env.EXPECTED_STATUS }}|${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ secrets.GCHAT_SPACE_ID }}"
           
-          # 4. Send to Wazuh
           curl -k -s -X POST "https://35.200.203.148:55000/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{\"events\": [\"$PAYLOAD\"]}"
-          
           exit 1
