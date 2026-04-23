@@ -123,11 +123,12 @@ jobs:
       - name: Trigger Wazuh Alert via API (Pipe-Separated Format)
         if: failure()
         run: |
-          # 1. Safely check if k6 actually generated a file
+          # 1. Safely extract values using 'avg' (which k6 always generates)
           if [ -f result.json ]; then
-            ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
+            ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
             ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
-            STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
+            # k6 check fails are located here:
+            STATUS_FAIL=$(jq -r '.root_group.checks[0].fails // 0' result.json)
           else
             ACTUAL_P98=0; ACTUAL_ERR=1; STATUS_FAIL=1;
           fi
@@ -135,7 +136,7 @@ jobs:
           # 2. Authenticate
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
           
-          # 3. Create the stable, un-breakable Pipe String
+          # 3. Create the stable Pipe String
           PAYLOAD="PIPELINE_ALERT_TRIGGER|${{ github.event.repository.name }}|${{ secrets.DEFECTDOJO_PRODUCT_ID }}|${ACTUAL_P98}|${{ env.LATENCY_THRESHOLD }}|${ACTUAL_ERR}|${{ env.ERROR_RATE_LIMIT }}|${STATUS_FAIL}|${{ env.EXPECTED_STATUS }}|${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ secrets.GCHAT_SPACE_ID }}"
           
           # 4. Send to Wazuh
