@@ -106,27 +106,30 @@ jobs:
       - name: Trigger Wazuh Alert via API (Comprehensive)
         if: failure()
         run: |
-          # 1. Extract values safely
-          ACTUAL_P98=$(jq '.metrics.http_req_duration.values."p(98)"' result.json | cut -d. -f1 || echo "0")
-          ACTUAL_ERR=$(jq '.metrics.http_req_failed.values.rate' result.json || echo "0")
-          STATUS_FAIL=$(jq '.metrics.checks.values.fails' result.json || echo "0")
+          # 1. Extract values safely. If missing, set to 0.
+          ACTUAL_P98=$(jq '.metrics.http_req_duration.values."p(98)" // 0' result.json | cut -d. -f1)
+          ACTUAL_ERR=$(jq '.metrics.http_req_failed.values.rate // 0' result.json)
+          STATUS_FAIL=$(jq '.metrics.checks.values.fails // 0' result.json)
 
-          # 2. Build Analysis (Single-quoted to handle spaces in Python)
+          # 2. Build multi-line Failure Analysis (Using ASCII * instead of • for safety)
           BREACHES=""
-          if [ "$ACTUAL_P98" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then 
-            BREACHES="${BREACHES}• *Latency:* ${ACTUAL_P98}ms (Limit ${{ env.LATENCY_THRESHOLD }}ms) - Website is too slow for users, resulting in a degraded experience. "
+          if [ "$ACTUAL_P98" -ne "0" ] && [ "$ACTUAL_P98" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then 
+            BREACHES="${BREACHES}* Latency: ${ACTUAL_P98}ms (Limit ${{ env.LATENCY_THRESHOLD }}ms) - Website is slower than threshold. "
           fi
-          if [ "$ACTUAL_ERR" != "0" ]; then
-            BREACHES="${BREACHES}• *Errors:* Detected (Limit ${{ env.ERROR_RATE_LIMIT }}) - Server is unstable and may be dropping connections. "
+          
+          # Check for any errors (not 0.0)
+          if [[ "$ACTUAL_ERR" != "0" ]]; then
+            BREACHES="${BREACHES}* Errors: High Rate detected (Limit ${{ env.ERROR_RATE_LIMIT }}) - Server is unstable. "
           fi
+          
           if [ "$STATUS_FAIL" -gt 0 ]; then
-            BREACHES="${BREACHES}• *Status:* Found 200 (Expected ${{ env.EXPECTED_STATUS }}) - Server is alive but returned an incorrect status code. "
+            BREACHES="${BREACHES}* Status: Incorrect Response (Expected ${{ env.EXPECTED_STATUS }}) - Logic error in deployment. "
           fi
 
-          # 3. Get Token
+          # 3. Get Wazuh Token
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
           
-          # 4. Send Trigger (Notice the single quotes around $BREACHES)
+          # 4. Send Trigger
           curl -k -s -X POST "https://35.200.203.148:55000/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
@@ -136,7 +139,6 @@ jobs:
               ]
             }"
           exit 1
-
       - name: Report Failure to Sentry
         if: failure()
         run: |
