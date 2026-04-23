@@ -119,24 +119,22 @@ jobs:
               \"threshold\": \"${{ env.LATENCY_THRESHOLD }}ms\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
-      - name: Trigger Wazuh Alert (Final Verified Format)
+      - name: Trigger Wazuh Alert (Yesterday's Stable Format)
         if: failure()
         run: |
-          # 1. Safely extract values from result.json (defaults to 0 if missing)
+          # 1. Extract values safely (defaults to 0 if missing)
+          # We use 'avg' instead of 'p98' so small tests don't return 0
           if [ -f result.json ]; then
-            ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
-            ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
-            STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
+            ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
           else
-            ACTUAL_P98=0; ACTUAL_ERR=1; STATUS_FAIL=1;
+            ACTUAL_LAT=0
           fi
 
           # 2. Get Wazuh Token
           TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
           
-          # 3. Create the stable Pipe String (MUST match the 11 parts the script expects)
-          # Format: TRIGGER|repo|prod_id|p98|p98l|err|errl|stf|ste|url|space_id
-          PAYLOAD="PIPELINE_ALERT_TRIGGER|${{ github.event.repository.name }}|${{ secrets.DEFECTDOJO_PRODUCT_ID }}|${ACTUAL_P98}|${{ env.LATENCY_THRESHOLD }}|${ACTUAL_ERR}|${{ env.ERROR_RATE_LIMIT }}|${STATUS_FAIL}|${{ env.EXPECTED_STATUS }}|${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ secrets.GCHAT_SPACE_ID }}"
+          # 3. Create the stable Pipe String (repo|job|prod|thresh|url|space_id)
+          PAYLOAD="PIPELINE_ALERT_TRIGGER|${{ github.event.repository.name }}|${{ github.job }}|${{ secrets.DEFECTDOJO_PRODUCT_ID }}|${ACTUAL_LAT}|${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ secrets.GCHAT_SPACE_ID }}"
           
           # 4. Send to Wazuh
           curl -k -s -X POST "https://35.200.203.148:55000/events" \
@@ -144,7 +142,6 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"events\": [\"$PAYLOAD\"]}"
           
-          # Force job to stay red
           exit 1
 
       - name: Report Failure to Sentry
