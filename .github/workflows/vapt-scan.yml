@@ -147,7 +147,7 @@ jobs:
           fi
       
           # Build message using printf for clean newlines
-          MESSAGE=$(printf '🚨 *CRITICAL: PIPELINE FAILURE DETECTED*\n📂 Repository: %s\n🆔 Product ID: %s\n⚠️ *Failure Analysis:*\n%s\n🔗 Action: <%s|Investigate Logs in GitHub>\n🖥 Audit Hub: <https://35.200.203.148|Wazuh Dashboard>' \
+          MESSAGE=$(printf '🚨 *CRITICAL: PIPELINE FAILURE DETECTED*\n Repository: %s\n Product ID: %s\n *Failure Analysis:*\n%s\n Action: <%s|Investigate Logs in GitHub>\n Audit Hub: <https://35.200.203.148|Wazuh Dashboard>' \
             "${{ github.event.repository.name }}" \
             "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
             "$FAILURES" \
