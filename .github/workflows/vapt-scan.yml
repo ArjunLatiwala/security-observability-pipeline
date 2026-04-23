@@ -99,44 +99,24 @@ jobs:
               \"status\": \"${{ job.status }}\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
-      - name: Trigger Wazuh Alert (Python Data Mode)
+      - name: Trigger Wazuh Alert via API
         if: failure()
-        shell: python
         run: |
-          import json, requests, os, sys
+          # 1. Extract raw numbers safely
+          ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
+          ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
+          STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
 
-          # 1. Load k6 results safely
-          try:
-              with open('result.json') as f:
-                  res = json.load(f)
-              p98 = res['metrics']['http_req_duration']['values'].get('p(98)', 0)
-              err = res['metrics']['http_req_failed']['values'].get('rate', 0)
-              chk = res['metrics']['checks']['values'].get('fails', 0)
-          except:
-              p98, err, chk = 0, 1, 1 # Fallback for engine crash
-
-          # 2. Build Data Object
-          alert_payload = {
-              "repo": "${{ github.event.repository.name }}",
-              "prod_id": "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
-              "actual_p98": p98,
-              "limit_p98": int("${{ env.LATENCY_THRESHOLD }}"),
-              "actual_err": err,
-              "limit_err": float("${{ env.ERROR_RATE_LIMIT }}"),
-              "status_fail": chk,
-              "expected_st": "${{ env.EXPECTED_STATUS }}",
-              "space_id": "${{ secrets.GCHAT_SPACE_ID }}",
-              "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          }
-
-          # 3. Send to Wazuh
-          auth_url = "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate"
-          token = requests.post(auth_url, auth=('wazuh-wui', 'MyS3cr37P450r.*-'), verify=False).json()['data']['token']
+          # 2. Get Token
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
           
-          event_url = "${{ env.WAZUH_MANAGER_URL }}/events"
-          headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-          
-          # We wrap the data in a clear marker 'JSON_PAYLOAD:'
-          msg = "JSON_PAYLOAD:" + json.dumps(alert_payload)
-          requests.post(event_url, headers=headers, json={"events": [msg]}, verify=False)
-          sys.exit(1)
+          # 3. Send raw data string (Notice: no spaces in values)
+          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"events\": [
+                \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} p98=${ACTUAL_P98} p98l=${{ env.LATENCY_THRESHOLD }} err=${ACTUAL_ERR} errl=${{ env.ERROR_RATE_LIMIT }} stf=${STATUS_FAIL} ste=${{ env.EXPECTED_STATUS }} space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              ]
+            }"
+          exit 1
