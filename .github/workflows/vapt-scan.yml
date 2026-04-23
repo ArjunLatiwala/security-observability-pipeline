@@ -99,20 +99,20 @@ jobs:
               \"status\": \"${{ job.status }}\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
-
       - name: Trigger Wazuh Alert via API (Raw Data Mode)
         if: failure()
         run: |
-          # 1. Extract raw numbers safely (defaults to 0 if null/missing)
-          ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 0' result.json | cut -d. -f1)
+          # 1. Extract raw numbers safely with exact k6 JSON paths
+          # We use -r to get raw text and 'or 0' to prevent nulls
+          ACTUAL_P98=$(jq -r '.metrics.http_req_duration.values."p(98)" // 0' result.json | cut -d. -f1)
           ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
           STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
 
           # 2. Get Wazuh Token
-          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate" | jq -r .data.token)
+          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
           
-          # 3. Send ONLY raw metrics (No spaces, no quotes to break the string!)
-          curl -k -s -X POST "${{ env.WAZUH_MANAGER_URL }}/events" \
+          # 3. Send Payload (Using the exact keys the Python script expects)
+          curl -k -s -X POST "https://35.200.203.148:55000/events" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
@@ -120,4 +120,6 @@ jobs:
                 \"PIPELINE_ALERT_TRIGGER: repo=${{ github.event.repository.name }} prod_id=${{ secrets.DEFECTDOJO_PRODUCT_ID }} actual_p98=${ACTUAL_P98} limit_p98=${{ env.LATENCY_THRESHOLD }} actual_err=${ACTUAL_ERR} limit_err=${{ env.ERROR_RATE_LIMIT }} status_fail=${STATUS_FAIL} expected_st=${{ env.EXPECTED_STATUS }} space_id=${{ secrets.GCHAT_SPACE_ID }} url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
               ]
             }"
+          
+          # This exit 1 ensures the GitHub checkmark stays RED on failure
           exit 1
