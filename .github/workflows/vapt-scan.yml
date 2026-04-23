@@ -49,11 +49,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Tools (k6 & jq)
-        run: sudo apt-get update && sudo apt-get install -y jq curl
-
-      - name: Install k6
+      - name: Setup Tools (k6 & Python)
         run: |
+          sudo apt-get update && sudo apt-get install -y curl python3-requests
           curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update && sudo apt-get install -y k6
@@ -61,11 +59,11 @@ jobs:
       - name: Run k6 Load Test
         id: k6_run
         run: |
-          # We create the JS file using a safer method to avoid syntax errors
           cat << 'EOF' > k6-test.js
           import http from 'k6/http';
           import { check } from 'k6';
           export const options = { 
+            iterations: 10, # Force 10 runs for stable data
             thresholds: { 
               'http_req_duration': ['p(98)<' + __ENV.LATENCY_LIMIT],
               'http_req_failed': ['rate<' + __ENV.ERROR_LIMIT],
@@ -91,33 +89,52 @@ jobs:
           curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
             -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"timestamp\": \"$TIMESTAMP\",
-              \"event_type\": \"PERFORMANCE_BENCHMARK\",
-              \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
-              \"repo\": \"${{ github.event.repository.name }}\",
-              \"status\": \"${{ job.status }}\",
-              \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-            }"
-      - name: Trigger Wazuh Alert via API (Data Extraction Fix)
+            -d "{\"timestamp\": \"$TIMESTAMP\", \"event_type\": \"PERFORMANCE_BENCHMARK\", \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\", \"repo\": \"${{ github.event.repository.name }}\", \"status\": \"${{ job.status }}\", \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+      - name: Trigger Wazuh Alert (Python Extraction Mode)
         if: failure()
+        shell: python
         run: |
-          # 1. Extract values using 'average' instead of 'p98' for test stability
-          ACTUAL_LATENCY=$(jq -r '.metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
-          ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
-          STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
+          import json, requests, sys
 
-          # Debug: Print to GitHub Console
-          echo "DEBUG: Latency=$ACTUAL_LATENCY, Errors=$ACTUAL_ERR, StatusFail=$STATUS_FAIL"
+          # 1. Extract real data from JSON
+          try:
+              with open('result.json') as f:
+                  res = json.load(f)
+              p98 = res['metrics']['http_req_duration']['values'].get('p(98)', 0)
+              avg = res['metrics']['http_req_duration']['values'].get('avg', 0)
+              err = res['metrics']['http_req_failed']['values'].get('rate', 0)
+              chk = res['metrics']['checks']['values'].get('fails', 0)
+              
+              # Use the best available latency number
+              latency = int(p98) if p98 > 0 else int(avg)
+          except:
+              latency, err, chk = 0, 1, 1
 
-          # 2. Get Token
-          TOKEN=$(curl -u "wazuh-wui:MyS3cr37P450r.*-" -k -s -X POST "https://35.200.203.148:55000/security/user/authenticate" | jq -r .data.token)
+          # 2. Build the exact Pipe-Separated payload the server expects
+          # Format: TRIGGER|repo|prod_id|p98|p98l|err|errl|stf|ste|url|space_id
+          payload_parts = [
+              "PIPELINE_ALERT_TRIGGER",
+              "${{ github.event.repository.name }}",
+              "${{ secrets.DEFECTDOJO_PRODUCT_ID }}",
+              str(latency),
+              "${{ env.LATENCY_THRESHOLD }}",
+              str(err),
+              "${{ env.ERROR_RATE_LIMIT }}",
+              str(int(chk)),
+              "${{ env.EXPECTED_STATUS }}",
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "${{ secrets.GCHAT_SPACE_ID }}"
+          ]
           
-          # 3. Send Payload (Using 'avg' for p98 to ensure the server script sees a breach)
-          PAYLOAD="PIPELINE_ALERT_TRIGGER|${{ github.event.repository.name }}|${{ secrets.DEFECTDOJO_PRODUCT_ID }}|${ACTUAL_LATENCY}|${{ env.LATENCY_THRESHOLD }}|${ACTUAL_ERR}|${{ env.ERROR_RATE_LIMIT }}|${STATUS_FAIL}|${{ env.EXPECTED_STATUS }}|${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ secrets.GCHAT_SPACE_ID }}"
+          final_string = "|".join(payload_parts)
+          print(f"DEBUG SENDING: {final_string}")
+
+          # 3. Authenticate and Send to Wazuh
+          auth_url = "${{ env.WAZUH_MANAGER_URL }}/security/user/authenticate"
+          token = requests.post(auth_url, auth=('wazuh-wui', 'MyS3cr37P450r.*-'), verify=False).json()['data']['token']
           
-          curl -k -s -X POST "https://35.200.203.148:55000/events" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"events\": [\"$PAYLOAD\"]}"
-          exit 1
+          event_url = "${{ env.WAZUH_MANAGER_URL }}/events"
+          headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+          requests.post(event_url, headers=headers, json={"events": [final_string]}, verify=False)
+          sys.exit(1)
