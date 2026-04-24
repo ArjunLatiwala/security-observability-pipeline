@@ -94,15 +94,6 @@ jobs:
             echo "::warning::$REPORT"
           fi
 
-      - name: Upload Security Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vapt-reports
-          path: |
-            report_html.html
-            report_json.json
-
   # ==========================================
   # JOB 2: STEP 5 - Benchmarking + Sentry
   # ==========================================
@@ -143,7 +134,7 @@ jobs:
             check(res, { 'status_is_correct': (r) => r.status === parseInt(__ENV.EXPECTED_ST) });
           }
           EOF
-          k6 run --summary-export=result.json k6-test.js
+          k6 run --out cloud --summary-export=result.json k6-test.js
         env:
           MY_URL: ${{ env.TARGET_URL }}
           LATENCY_LIMIT: ${{ env.LATENCY_THRESHOLD }}
