@@ -106,35 +106,36 @@ jobs:
         if: failure()
         run: |
           if [ -f result.json ]; then
-            # 1. Extract actual values
+            # Correct field paths for k6 summary-export format
             ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values["p(98)"] // .metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
             ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
-            STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
-
-            # 2. Build descriptive "Expectation vs Reality" report
-            REPORT="AUDIT DETAILS: "
-            
+            # checks.values.rate is 0-1, anything under 1.0 means a check failed
+            ACTUAL_CHECK_RATE=$(jq -r '.metrics.checks.values.rate // 1' result.json)
+      
+            REPORT="AUDIT DETAILS:"
+      
             if [ "$ACTUAL_LAT" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then
               REPORT="$REPORT | LATENCY BREACH: Observed ${ACTUAL_LAT}ms (Limit: ${{ env.LATENCY_THRESHOLD }}ms)"
             fi
-            
+      
             if (( $(echo "$ACTUAL_ERR > ${{ env.ERROR_RATE_LIMIT }}" | bc -l) )); then
               REPORT="$REPORT | RELIABILITY FAIL: Error rate was ${ACTUAL_ERR} (Limit: ${{ env.ERROR_RATE_LIMIT }})"
             fi
-            
-            if [ "$STATUS_FAIL" -gt 0 ]; then
-              REPORT="$REPORT | AVAILABILITY FAIL: Found non-200 status codes (Expected ${{ env.EXPECTED_STATUS }})"
+      
+            if (( $(echo "$ACTUAL_CHECK_RATE < 1.0" | bc -l) )); then
+              REPORT="$REPORT | STATUS MISMATCH: All requests returned HTTP 200 but pipeline expected ${{ env.EXPECTED_STATUS }}"
             fi
-
-            if [ "$REPORT" == "AUDIT DETAILS: " ]; then REPORT="PASS: All metrics within industry thresholds."; fi
+      
+            # If nothing was appended, it's a genuine pass
+            if [ "$REPORT" = "AUDIT DETAILS:" ]; then
+              REPORT="PASS: All metrics within industry thresholds."
+            fi
           else
             REPORT="CRITICAL: Benchmarking engine failed to generate results."
+            ACTUAL_LAT=0
+            ACTUAL_ERR=0
           fi
-
-          # 3. Determine status
-          if [ "${{ steps.k6_run.outcome }}" == "failure" ]; then STATUS="failure"; else STATUS="success"; fi
-
-          # 4. Send to Wazuh
+      
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
             -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
@@ -142,8 +143,14 @@ jobs:
             -d "{
               \"timestamp\": \"$TIMESTAMP\",
               \"event_type\": \"PERFORMANCE_AUDIT\",
+              \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
               \"repo\": \"${{ github.event.repository.name }}\",
-              \"status\": \"$STATUS\",
+              \"status\": \"failure\",
+              \"latency_observed_ms\": $ACTUAL_LAT,
+              \"latency_threshold_ms\": ${{ env.LATENCY_THRESHOLD }},
+              \"error_rate_observed\": $ACTUAL_ERR,
+              \"error_rate_limit\": ${{ env.ERROR_RATE_LIMIT }},
+              \"expected_status_code\": ${{ env.EXPECTED_STATUS }},
               \"breach_details\": \"$REPORT\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
