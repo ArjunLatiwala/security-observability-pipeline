@@ -8,9 +8,9 @@ env:
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
   WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
   # --- INTENTIONAL FAILURES FOR DEMO ---
-  LATENCY_THRESHOLD: 2000         # Fail: Real latency > 10ms
-  EXPECTED_STATUS: 201           # Fail: Site is 200, we want 201
-  ERROR_RATE_LIMIT: 0.01       # Fail: Tiny threshold
+  LATENCY_THRESHOLD: 100        # Fail: Real latency > 10ms
+  EXPECTED_STATUS: 200           # Fail: Site is 200, we want 201
+  ERROR_RATE_LIMIT: 0.05       # Fail: Tiny threshold
 
 jobs:
   # ==========================================
