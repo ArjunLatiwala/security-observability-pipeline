@@ -47,12 +47,13 @@ jobs:
             if [ "$TOTAL_ALERTS" -lt 2 ]; then
               ZAP_STATUS="blocked"; REPORT="WARNING: Site may be protected by WAF."
             elif [ "$HIGH" -gt 0 ]; then
-              ZAP_STATUS="vulnerable"; REPORT="CRITICAL VULNERABILITIES FOUND: ${HIGH} High."
+              ZAP_STATUS="vulnerable"; REPORT="CRITICAL VULNERABILITIES FOUND: ${HIGH} High, ${MEDIUM} Medium, ${LOW} Low, ${INFO} Informational."
+            elif [ "$MEDIUM" -gt 0 ]; then
+              ZAP_STATUS="warning"; REPORT="MEDIUM VULNERABILITIES FOUND: ${MEDIUM} Medium, ${LOW} Low, ${INFO} Informational. Review within SLA."
             else
-              ZAP_STATUS="clean"; REPORT="PASS: No High/Medium vulnerabilities detected."
+              ZAP_STATUS="clean"; REPORT="PASS: No High/Medium vulnerabilities detected. ${LOW} Low, ${INFO} Informational findings logged."
             fi
           fi
-
           curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
             -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
             -H "Content-Type: application/json" \
@@ -62,6 +63,11 @@ jobs:
               \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
               \"repo\": \"${{ github.event.repository.name }}\",
               \"status\": \"$ZAP_STATUS\",
+              \"alerts_high\": $HIGH,
+              \"alerts_medium\": $MEDIUM,
+              \"alerts_low\": $LOW,
+              \"alerts_info\": $INFO,
+              \"alerts_total\": $TOTAL_ALERTS,
               \"breach_details\": \"$REPORT\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
