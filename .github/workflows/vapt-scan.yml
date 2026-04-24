@@ -103,7 +103,7 @@ jobs:
           EXPECTED_ST: ${{ env.EXPECTED_STATUS }}
           
       - name: Log Performance Audit to Wazuh Indexer
-        if: failure()
+        if: always()
         run: |
           if [ -f result.json ]; then
             # Correct paths matching your actual k6 JSON structure
