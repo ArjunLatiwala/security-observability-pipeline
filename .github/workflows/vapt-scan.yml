@@ -16,44 +16,92 @@ jobs:
   # ==========================================
   # JOB 1: STEP 4 - Deep Security (VAPT)
   # ==========================================
-  security_vapt_job:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+ security_vapt_job:
+  runs-on: ubuntu-latest
+  steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-      - name: OWASP ZAP Full Scan
-        uses: zaproxy/action-full-scan@v0.12.0
-        with:
-          target: ${{ env.TARGET_URL }}
-          fail_action: false
-          cmd_options: '-a -j -r report_html.html -J report_json.json'
+    - name: OWASP ZAP Full Scan
+      uses: zaproxy/action-full-scan@v0.12.0
+      with:
+        target: ${{ env.TARGET_URL }}
+        fail_action: false          # We handle failure ourselves below
+        cmd_options: '-a -j -r report_html.html -J report_json.json'
 
-      - name: Log Security Audit to Wazuh Indexer
-        if: always()
-        continue-on-error: true
-        run: |
-          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
-            -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"timestamp\": \"$TIMESTAMP\",
-              \"event_type\": \"SECURITY_VAPT_SCAN\",
-              \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
-              \"repo\": \"${{ github.event.repository.name }}\",
-              \"status\": \"${{ job.status }}\",
-              \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-            }"
+    - name: Analyse ZAP Results and Log to Wazuh
+      if: always()
+      run: |
+        TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-      - name: Upload Security Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vapt-reports
-          path: |
-            report_html.html
-            report_json.json
+        if [ ! -f report_json.json ]; then
+          # ZAP couldn't even run — infrastructure problem
+          ZAP_STATUS="error"
+          REPORT="CRITICAL: ZAP failed to generate report. Check runner connectivity."
+          HIGH=0; MEDIUM=0; LOW=0; INFO=0; TOTAL_ALERTS=0
+        else
+          # Count alerts by risk level from ZAP JSON
+          HIGH=$(jq '[.site[]?.alerts[]? | select(.riskcode == "3")] | length' report_json.json 2>/dev/null || echo 0)
+          MEDIUM=$(jq '[.site[]?.alerts[]? | select(.riskcode == "2")] | length' report_json.json 2>/dev/null || echo 0)
+          LOW=$(jq '[.site[]?.alerts[]? | select(.riskcode == "1")] | length' report_json.json 2>/dev/null || echo 0)
+          INFO=$(jq '[.site[]?.alerts[]? | select(.riskcode == "0")] | length' report_json.json 2>/dev/null || echo 0)
+          TOTAL_ALERTS=$(jq '[.site[]?.alerts[]?] | length' report_json.json 2>/dev/null || echo 0)
+
+          # Detect WAF blocking: if ZAP found almost nothing, it was likely blocked
+          # A real scan of any live site finds at least informational alerts
+          if [ "$TOTAL_ALERTS" -lt 2 ]; then
+            ZAP_STATUS="blocked"
+            REPORT="WARNING: ZAP scan returned suspiciously few results (${TOTAL_ALERTS} alerts). Site may be protected by WAF/firewall. Manual verification required."
+          elif [ "$HIGH" -gt 0 ]; then
+            ZAP_STATUS="vulnerable"
+            REPORT="CRITICAL VULNERABILITIES FOUND: ${HIGH} High, ${MEDIUM} Medium, ${LOW} Low, ${INFO} Informational. Immediate remediation required."
+          elif [ "$MEDIUM" -gt 0 ]; then
+            ZAP_STATUS="warning"
+            REPORT="MEDIUM VULNERABILITIES FOUND: ${MEDIUM} Medium, ${LOW} Low, ${INFO} Informational. Review and remediate within SLA."
+          else
+            ZAP_STATUS="clean"
+            REPORT="PASS: No High/Medium vulnerabilities detected. ${LOW} Low, ${INFO} Informational findings logged."
+          fi
+        fi
+
+        # Log rich document to Wazuh
+        curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
+          -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"timestamp\": \"$TIMESTAMP\",
+            \"event_type\": \"SECURITY_VAPT_SCAN\",
+            \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
+            \"repo\": \"${{ github.event.repository.name }}\",
+            \"status\": \"$ZAP_STATUS\",
+            \"alerts_high\": $HIGH,
+            \"alerts_medium\": $MEDIUM,
+            \"alerts_low\": $LOW,
+            \"alerts_info\": $INFO,
+            \"alerts_total\": $TOTAL_ALERTS,
+            \"breach_details\": \"$REPORT\",
+            \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+          }"
+
+        # Fail the pipeline only on HIGH vulnerabilities or scan error
+        # MEDIUM is a warning — logged but does not block
+        if [ "$ZAP_STATUS" = "vulnerable" ] || [ "$ZAP_STATUS" = "error" ]; then
+          echo "::error::$REPORT"
+          exit 1
+        fi
+
+        if [ "$ZAP_STATUS" = "blocked" ]; then
+          echo "::warning::$REPORT"
+        fi
+
+    - name: Upload Security Reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: vapt-reports
+        path: |
+          report_html.html
+          report_json.json
 
   # ==========================================
   # JOB 2: STEP 5 - Benchmarking + Sentry
@@ -106,32 +154,23 @@ jobs:
         if: always()
         run: |
           if [ -f result.json ]; then
-            # Correct paths matching your actual k6 JSON structure
             ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.avg // 0' result.json | cut -d. -f1)
             ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.value // 0' result.json)
             CHECK_FAILS=$(jq -r '.metrics.checks.fails // 0' result.json)
-            CHECK_PASSES=$(jq -r '.metrics.checks.passes // 0' result.json)
-      
-            # Check threshold breach flags directly from k6
-            LAT_THRESHOLD_BREACHED=$(jq -r '
-              .metrics.http_req_duration.thresholds // {} | 
-              to_entries | map(select(.value == false)) | length' result.json)
-            ERR_THRESHOLD_BREACHED=$(jq -r '
-              .metrics.http_req_failed.thresholds // {} | 
-              to_entries | map(select(.value == false)) | length' result.json)
       
             REPORT="AUDIT DETAILS:"
       
-            if [ "$LAT_THRESHOLD_BREACHED" -gt 0 ]; then
+            # Direct numeric comparison — never trust k6's threshold flags
+            if [ "$ACTUAL_LAT" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then
               REPORT="$REPORT | LATENCY BREACH: Observed ${ACTUAL_LAT}ms (Limit: ${{ env.LATENCY_THRESHOLD }}ms)"
             fi
       
-            if [ "$ERR_THRESHOLD_BREACHED" -gt 0 ]; then
-              REPORT="$REPORT | RELIABILITY FAIL: Error rate threshold breached (Limit: ${{ env.ERROR_RATE_LIMIT }})"
+            if (( $(echo "$ACTUAL_ERR > ${{ env.ERROR_RATE_LIMIT }}" | bc -l) )); then
+              REPORT="$REPORT | RELIABILITY FAIL: Error rate was ${ACTUAL_ERR} (Limit: ${{ env.ERROR_RATE_LIMIT }})"
             fi
       
             if [ "$CHECK_FAILS" -gt 0 ]; then
-              REPORT="$REPORT | STATUS MISMATCH: ${CHECK_FAILS} requests got HTTP 200, expected ${{ env.EXPECTED_STATUS }}"
+              REPORT="$REPORT | STATUS MISMATCH: ${CHECK_FAILS} requests got unexpected status, expected ${{ env.EXPECTED_STATUS }}"
             fi
       
             if [ "$REPORT" = "AUDIT DETAILS:" ]; then
@@ -140,14 +179,12 @@ jobs:
             else
               AUDIT_STATUS="failure"
             fi
-            
+      
           else
             REPORT="CRITICAL: Benchmarking engine failed to generate results."
             ACTUAL_LAT=0
             ACTUAL_ERR=0
             CHECK_FAILS=0
-            LAT_THRESHOLD_BREACHED=0
-            ERR_THRESHOLD_BREACHED=0
             AUDIT_STATUS="failure"
           fi
       
