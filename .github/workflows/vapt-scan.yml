@@ -8,9 +8,9 @@ env:
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
   WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
   # --- PRODUCTION CONFIGURATION ---
-  LATENCY_THRESHOLD: 2000        # Standard 2s limit
-  EXPECTED_STATUS: 200           # Standard healthy status
-  ERROR_RATE_LIMIT: 0.01         # 1% error tolerance
+  LATENCY_THRESHOLD: 10        # Standard 2s limit
+  EXPECTED_STATUS: 201           # Standard healthy status
+  ERROR_RATE_LIMIT: 0.0001         # 1% error tolerance
 
 jobs:
   # ==========================================
