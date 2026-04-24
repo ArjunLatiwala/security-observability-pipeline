@@ -105,6 +105,9 @@ jobs:
       - name: Log Performance Audit to Wazuh Indexer
         if: failure()
         run: |
+          echo "=== result.json contents ==="
+          cat result.json || echo "FILE NOT FOUND"
+          echo "=== end ==="
           if [ -f result.json ]; then
             # Correct field paths for k6 summary-export format
             ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values["p(98)"] // .metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
