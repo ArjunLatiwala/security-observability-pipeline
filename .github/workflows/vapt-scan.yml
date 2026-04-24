@@ -101,22 +101,40 @@ jobs:
           LATENCY_LIMIT: ${{ env.LATENCY_THRESHOLD }}
           ERROR_LIMIT: ${{ env.ERROR_RATE_LIMIT }}
           EXPECTED_ST: ${{ env.EXPECTED_STATUS }}
+          
       - name: Log Performance Audit to Wazuh Indexer
-        if: always() # Runs regardless of pass/fail
+        if: failure()
         run: |
-          # 1. Extract the actual numbers for the dashboard
           if [ -f result.json ]; then
-            ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
+            # 1. Extract actual values
+            ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values["p(98)"] // .metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
             ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
-            # Build a clear "Full Log" message
-            BREACH_LOG="Latency: ${ACTUAL_LAT}ms, Error Rate: ${ACTUAL_ERR}"
+            STATUS_FAIL=$(jq -r '.metrics.checks.values.fails // 0' result.json)
+
+            # 2. Build descriptive "Expectation vs Reality" report
+            REPORT="AUDIT DETAILS: "
+            
+            if [ "$ACTUAL_LAT" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then
+              REPORT="$REPORT | LATENCY BREACH: Observed ${ACTUAL_LAT}ms (Limit: ${{ env.LATENCY_THRESHOLD }}ms)"
+            fi
+            
+            if (( $(echo "$ACTUAL_ERR > ${{ env.ERROR_RATE_LIMIT }}" | bc -l) )); then
+              REPORT="$REPORT | RELIABILITY FAIL: Error rate was ${ACTUAL_ERR} (Limit: ${{ env.ERROR_RATE_LIMIT }})"
+            fi
+            
+            if [ "$STATUS_FAIL" -gt 0 ]; then
+              REPORT="$REPORT | AVAILABILITY FAIL: Found non-200 status codes (Expected ${{ env.EXPECTED_STATUS }})"
+            fi
+
+            if [ "$REPORT" == "AUDIT DETAILS: " ]; then REPORT="PASS: All metrics within industry thresholds."; fi
           else
-            BREACH_LOG="System Error: k6 failed to run"
+            REPORT="CRITICAL: Benchmarking engine failed to generate results."
           fi
 
-          # 2. Send to Wazuh (We hardcode 'failure'/'success' for reliability)
+          # 3. Determine status
           if [ "${{ steps.k6_run.outcome }}" == "failure" ]; then STATUS="failure"; else STATUS="success"; fi
 
+          # 4. Send to Wazuh
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
             -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
@@ -126,9 +144,10 @@ jobs:
               \"event_type\": \"PERFORMANCE_AUDIT\",
               \"repo\": \"${{ github.event.repository.name }}\",
               \"status\": \"$STATUS\",
-              \"breach_details\": \"$BREACH_LOG\",
+              \"breach_details\": \"$REPORT\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
+            
       - name: Send Google Chat Alert on Failure
         if: failure()
         run: |
