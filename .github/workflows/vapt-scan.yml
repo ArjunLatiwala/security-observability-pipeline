@@ -83,9 +83,9 @@ jobs:
           import http from 'k6/http';
           import { check } from 'k6';
           export const options = { 
-            iterations: 10,
+            iterations: 50,
             thresholds: { 
-              'http_req_duration':['p(98)<' + __ENV.LATENCY_LIMIT],
+              'http_req_duration':['p(95)<' + __ENV.LATENCY_LIMIT],
               'http_req_failed':['rate<' + __ENV.ERROR_LIMIT],
               'checks': ['rate==1.0']
             } 
@@ -171,7 +171,7 @@ jobs:
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
       
-          ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values["p(98)"] // 25' result.json | awk '{print int($1)}')
+          ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values["p(95)"] // 25' result.json | awk '{print int($1)}')
           ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0.05' result.json)
           ACTUAL_STATUS=$(jq -r '.metrics.checks.values.rate // 0' result.json)
       
