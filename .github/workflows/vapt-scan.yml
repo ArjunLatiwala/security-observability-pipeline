@@ -7,10 +7,10 @@ env:
   TARGET_URL: 'https://husaintrivedi.site'
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
   WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
-  # --- INTENTIONAL FAILURES FOR DEMO ---
-  LATENCY_THRESHOLD: 10          # Fail: Real latency > 10ms
-  EXPECTED_STATUS: 201           # Fail: Site is 200, we want 201
-  ERROR_RATE_LIMIT: 0.0001       # Fail: Tiny threshold
+  # --- PRODUCTION CONFIGURATION ---
+  LATENCY_THRESHOLD: 2000        # Standard 2s limit
+  EXPECTED_STATUS: 200           # Standard healthy status
+  ERROR_RATE_LIMIT: 0.01         # 1% error tolerance
 
 jobs:
   # ==========================================
@@ -33,7 +33,6 @@ jobs:
         if: always()
         run: |
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
           if [ ! -f report_json.json ]; then
             ZAP_STATUS="error"
             REPORT="CRITICAL: ZAP failed to generate report."
@@ -46,14 +45,11 @@ jobs:
             TOTAL_ALERTS=$(jq '[.site[]?.alerts[]?] | length' report_json.json 2>/dev/null || echo 0)
 
             if [ "$TOTAL_ALERTS" -lt 2 ]; then
-              ZAP_STATUS="blocked"
-              REPORT="WARNING: ZAP scan returned few results. Site may be protected by WAF."
+              ZAP_STATUS="blocked"; REPORT="WARNING: Site may be protected by WAF."
             elif [ "$HIGH" -gt 0 ]; then
-              ZAP_STATUS="vulnerable"
-              REPORT="CRITICAL VULNERABILITIES FOUND: ${HIGH} High detected."
+              ZAP_STATUS="vulnerable"; REPORT="CRITICAL VULNERABILITIES FOUND: ${HIGH} High."
             else
-              ZAP_STATUS="clean"
-              REPORT="PASS: No High/Medium vulnerabilities detected."
+              ZAP_STATUS="clean"; REPORT="PASS: No High/Medium vulnerabilities detected."
             fi
           fi
 
@@ -69,17 +65,7 @@ jobs:
               \"breach_details\": \"$REPORT\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
-
           if [ "$ZAP_STATUS" = "vulnerable" ] || [ "$ZAP_STATUS" = "error" ]; then exit 1; fi
-
-      - name: Upload Security Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vapt-reports
-          path: |
-            report_html.html
-            report_json.json
 
   # ==========================================
   # JOB 2: STEP 5 - Benchmarking + Sentry
@@ -130,93 +116,63 @@ jobs:
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
           K6_CLOUD_PROJECT_ID: 7324608
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
-
+          
       - name: Log Performance Audit to Wazuh Indexer
         if: always()
+        env:
+          WAZUH_INDEXER_URL: ${{ env.WAZUH_INDEXER_URL }}
+          WAZUH_INDEXER_PASSWORD: ${{ secrets.WAZUH_INDEXER_PASSWORD }}
+          DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LATENCY_THRESHOLD: ${{ env.LATENCY_THRESHOLD }}
+          ERROR_RATE_LIMIT: ${{ env.ERROR_RATE_LIMIT }}
+          EXPECTED_STATUS: ${{ env.EXPECTED_STATUS }}
         run: |
-          if [ -f result.json ]; then
-            python3 - <<'PYEOF'
-          import json, os
-          with open('result.json') as f:
-              d = json.load(f)
-          m = d['metrics']
-          r = d['root_group']
-          actual_lat   = int(m['http_req_duration']['p(95)'])
-          actual_err   = float(m['http_req_failed']['value'])
-          check_fails  = int(r['checks']['status_is_correct']['fails'])
-          lat_limit    = int(os.environ['LATENCY_THRESHOLD'])
-          err_limit    = float(os.environ['ERROR_RATE_LIMIT'])
-          expected_st  = os.environ['EXPECTED_STATUS']
-          report = "AUDIT DETAILS:"
-          if actual_lat > lat_limit:
-              report += f" | LATENCY BREACH: Observed {actual_lat}ms (Limit: {lat_limit}ms)"
-          if actual_err > err_limit:
-              report += f" | RELIABILITY FAIL: Error rate was {actual_err:.4f} (Limit: {err_limit})"
-          if check_fails > 0:
-              report += f" | STATUS MISMATCH: {check_fails} requests got unexpected status, expected {expected_st}"
-          if report == "AUDIT DETAILS:":
-              report = "PASS: All metrics within industry thresholds."
-              audit_status = "success"
+          python3 - <<'PYEOF'
+          import json, os, datetime, urllib.request, ssl, base64
+          result_path = 'result.json'
+          if os.path.exists(result_path):
+              with open(result_path) as f: d = json.load(f)
+              m = d['metrics']; r = d['root_group']
+              actual_lat  = int(m['http_req_duration']['values']['p(95)'])
+              actual_err  = float(m['http_req_failed']['values']['rate'])
+              check_fails = int(r['checks']['status_is_correct']['fails'])
+              lat_limit, err_limit, expected_st = int(os.environ['LATENCY_THRESHOLD']), float(os.environ['ERROR_RATE_LIMIT']), os.environ['EXPECTED_STATUS']
+              report = "AUDIT DETAILS:"
+              if actual_lat > lat_limit: report += f" | LATENCY BREACH: Observed {actual_lat}ms"
+              if actual_err > err_limit: report += f" | RELIABILITY FAIL: Error rate {actual_err:.4f}"
+              if check_fails > 0: report += f" | STATUS MISMATCH: {check_fails} failures"
+              if report == "AUDIT DETAILS:":
+                  report = "PASS: All metrics within thresholds."
+                  audit_status = "success"
+              else: audit_status = "failure"
           else:
-              audit_status = "failure"
-          with open(os.environ['GITHUB_ENV'], 'a') as f_env:
-              f_env.write(f"AUDIT_STATUS={audit_status}\n")
-              f_env.write(f"AUDIT_REPORT={report}\n")
-              f_env.write(f"ACTUAL_LAT={actual_lat}\n")
-              f_env.write(f"ACTUAL_ERR={actual_err}\n")
-              f_env.write(f"CHECK_FAILS={check_fails}\n")
+              actual_lat, actual_err, check_fails, report, audit_status = 0, 0.0, 0, "CRITICAL: No result.json", "failure"
+          
+          payload = {
+              "timestamp": datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+              "event_type": "PERFORMANCE_AUDIT", "product_id": os.environ['DEFECTDOJO_PRODUCT_ID'],
+              "repo": os.environ['REPO_NAME'], "status": audit_status,
+              "latency_observed_ms": actual_lat, "error_rate_observed": actual_err,
+              "status_check_fails": check_fails, "breach_details": report, "run_url": os.environ['RUN_URL']
+          }
+          auth = base64.b64encode(f"admin:{os.environ['WAZUH_INDEXER_PASSWORD']}".encode()).decode()
+          req = urllib.request.Request(os.environ['WAZUH_INDEXER_URL'] + '/pipeline-audit/_doc/', data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', 'Authorization': f'Basic {auth}'}, method='POST')
+          with urllib.request.urlopen(req, context=ssl._create_unverified_context()) as resp: print(resp.read().decode())
+          with open(os.environ['GITHUB_ENV'], 'a') as f_env: f_env.write(f"AUDIT_REPORT={report}\n")
           PYEOF
-          else
-            echo "AUDIT_STATUS=failure" >> $GITHUB_ENV
-            echo "AUDIT_REPORT=CRITICAL: Benchmarking engine failed to generate results." >> $GITHUB_ENV
-            echo "ACTUAL_LAT=0" >> $GITHUB_ENV
-            echo "ACTUAL_ERR=0" >> $GITHUB_ENV
-            echo "CHECK_FAILS=0" >> $GITHUB_ENV
-          fi
-
-          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
-            -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"timestamp\": \"$TIMESTAMP\",
-              \"event_type\": \"PERFORMANCE_AUDIT\",
-              \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
-              \"repo\": \"${{ github.event.repository.name }}\",
-              \"status\": \"$AUDIT_STATUS\",
-              \"latency_observed_ms\": $ACTUAL_LAT,
-              \"error_rate_observed\": $ACTUAL_ERR,
-              \"status_check_fails\": $CHECK_FAILS,
-              \"breach_details\": \"$AUDIT_REPORT\",
-              \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-            }"
 
       - name: Send Google Chat Alert on Failure
         if: failure()
         run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          # Using numerical comparison as requested by TL
-          ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
-          ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
-          CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
-
-          FAILURES=""
-          if (( ACTUAL_LAT > ${{ env.LATENCY_THRESHOLD }} )); then
-            FAILURES="${FAILURES}• Latency: ${ACTUAL_LAT}ms (Limit ${{ env.LATENCY_THRESHOLD }}ms) - Website is slow."$'\n'
-          fi
-          if (( $(echo "$ACTUAL_ERR > ${{ env.ERROR_RATE_LIMIT }}" | bc -l) )); then
-            FAILURES="${FAILURES}• Errors: ${ACTUAL_ERR} (Limit ${{ env.ERROR_RATE_LIMIT }}) - Server unstable."$'\n'
-          fi
-          if [ "$CHECK_FAILS" -gt 0 ]; then
-            FAILURES="${FAILURES}• Status: ${CHECK_FAILS} requests failed (Expected ${{ env.EXPECTED_STATUS }})."$'\n'
-          fi
-
-          MESSAGE=$(printf '🚨 *CRITICAL: PIPELINE FAILURE DETECTED*\n Repository: %s\n Product ID: %s\n *Failure Analysis:*\n%s\n Action: <%s|Investigate Logs in GitHub>\n Audit Hub: <https://35.200.203.148|Wazuh Dashboard>' \
+          # Use $AUDIT_REPORT (shell) for dynamic data to remove context warnings.
+          MESSAGE=$(printf '🚨 *CRITICAL: PIPELINE FAILURE DETECTED*\n📂 Repository: %s\n🆔 Product ID: %s\n⚠️ *Failure Analysis:*\n%s\n🔗 Action: %s' \
             "${{ github.event.repository.name }}" \
             "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
-            "$FAILURES" \
-            "$RUN_URL")
-
+            "$AUDIT_REPORT" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          
           jq -n --arg text "$MESSAGE" '{"text": $text}' | \
             curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
               -H "Content-Type: application/json" \
@@ -227,13 +183,12 @@ jobs:
         if: failure()
         run: |
           DSN="${{ secrets.SENTRY_DSN }}"
-          SENTRY_KEY=$(echo $DSN | awk -F'[:@/]' '{print $4}')
           SENTRY_HOST=$(echo $DSN | awk -F'[:@/]' '{print $5}')
           PROJECT_ID=$(echo $DSN | awk -F'[:@/]' '{print $6}')
           curl -X POST "https://$SENTRY_HOST/api/$PROJECT_ID/store/" \
-            -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$SENTRY_KEY, sentry_client=curl/1.0" \
+            -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$(echo $DSN | awk -F'[:@/]' '{print $4}'), sentry_client=curl/1.0" \
             -H 'Content-Type: application/json' \
-            -d "{\"message\": \"Regression: ${{ github.event.repository.name }}\", \"level\": \"error\"}"
+            -d "{\"message\": \"Performance Regression: ${{ github.event.repository.name }}\", \"level\": \"error\"}"
 
       - name: Upload Benchmarking Logs
         if: always()
