@@ -102,28 +102,33 @@ jobs:
           ERROR_LIMIT: ${{ env.ERROR_RATE_LIMIT }}
           EXPECTED_ST: ${{ env.EXPECTED_STATUS }}
       - name: Log Performance Audit to Wazuh Indexer
-        if: always()
+        if: always() # Runs regardless of pass/fail
         run: |
-                # 1. Extract the same failure data we use for the alert
-                if [ -f result.json ]; then
-                  ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values.avg // 25' result.json | awk '{print int($1)}')
-                  BREACH_INFO="Latency: ${ACTUAL_LAT}ms"
-                else
-                  BREACH_INFO="System Error: k6 failed"
-                fi
-      
-                # 2. Add the "breach_details" field to the JSON below
-                TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-                curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
-                  -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
-                  -H "Content-Type: application/json" \
-                  -d "{
-                    \"timestamp\": \"$TIMESTAMP\",
-                    \"status\": \"${{ job.status }}\",
-                    \"repo\": \"${{ github.event.repository.name }}\",
-                    \"breach_details\": \"$BREACH_INFO\",  # <--- NEW FIELD FOR DASHBOARD
-                    \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-                  }"
+          # 1. Extract the actual numbers for the dashboard
+          if [ -f result.json ]; then
+            ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
+            ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
+            # Build a clear "Full Log" message
+            BREACH_LOG="Latency: ${ACTUAL_LAT}ms, Error Rate: ${ACTUAL_ERR}"
+          else
+            BREACH_LOG="System Error: k6 failed to run"
+          fi
+
+          # 2. Send to Wazuh (We hardcode 'failure'/'success' for reliability)
+          if [ "${{ steps.k6_run.outcome }}" == "failure" ]; then STATUS="failure"; else STATUS="success"; fi
+
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
+            -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"timestamp\": \"$TIMESTAMP\",
+              \"event_type\": \"PERFORMANCE_AUDIT\",
+              \"repo\": \"${{ github.event.repository.name }}\",
+              \"status\": \"$STATUS\",
+              \"breach_details\": \"$BREACH_LOG\",
+              \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+            }"
       - name: Send Google Chat Alert on Failure
         if: failure()
         run: |
