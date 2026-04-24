@@ -136,7 +136,11 @@ jobs:
       
             if [ "$REPORT" = "AUDIT DETAILS:" ]; then
               REPORT="PASS: All metrics within industry thresholds."
+              AUDIT_STATUS="success"
+            else
+              AUDIT_STATUS="failure"
             fi
+            
           else
             REPORT="CRITICAL: Benchmarking engine failed to generate results."
             ACTUAL_LAT=0
@@ -144,6 +148,7 @@ jobs:
             CHECK_FAILS=0
             LAT_THRESHOLD_BREACHED=0
             ERR_THRESHOLD_BREACHED=0
+            AUDIT_STATUS="failure"
           fi
       
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -155,7 +160,7 @@ jobs:
               \"event_type\": \"PERFORMANCE_AUDIT\",
               \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
               \"repo\": \"${{ github.event.repository.name }}\",
-              \"status\": \"failure\",
+              \"status\": \"$AUDIT_STATUS\",
               \"threshold\": \"p(95)<${{ env.LATENCY_THRESHOLD }}ms | error_rate<${{ env.ERROR_RATE_LIMIT }} | status==${{ env.EXPECTED_STATUS }}\",
               \"latency_observed_ms\": $ACTUAL_LAT,
               \"latency_threshold_ms\": ${{ env.LATENCY_THRESHOLD }},
