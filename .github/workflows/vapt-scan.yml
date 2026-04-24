@@ -244,19 +244,19 @@ jobs:
       
           FAILURES=""
           if (( ACTUAL_LAT > LAT_LIMIT )); then
-            FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)\n    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
+            FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
           fi
           if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
-            FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})\n    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
+            FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
           fi
           if [ "$CHECK_FAILS" -gt 0 ]; then
-            FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})\n    Impact: Possible misconfiguration or regression in application logic."$'\n'
+            FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
           fi
           if [ -z "$FAILURES" ]; then
             FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
           fi
       
-          MESSAGE=$(printf '[CRITICAL] PIPELINE FAILURE DETECTED
+          MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
           Incident ID : %s
           Time        : %s
@@ -264,16 +264,16 @@ jobs:
           Product ID  : %s
           Target      : %s
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          FAILURE ANALYSIS
+          *FAILURE ANALYSIS*
           
           %s
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          ACTIONS
+          *ACTIONS*
           
-            Investigate : <%s|View GitHub Actions Run>
-            Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
+          Investigate : <%s|View GitHub Actions Run>
+          Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          NEXT STEPS: Review logs  >  Identify root cause  >  Hotfix or rollback' \
+          *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
                 "$INCIDENT_ID" \
                 "$TIMESTAMP" \
                 "${{ github.event.repository.name }}" \
