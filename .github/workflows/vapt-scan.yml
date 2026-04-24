@@ -135,8 +135,8 @@ jobs:
           if os.path.exists(result_path):
               with open(result_path) as f: d = json.load(f)
               m = d['metrics']; r = d['root_group']
-              actual_lat  = int(m['http_req_duration']['values']['p(95)'])
-              actual_err  = float(m['http_req_failed']['values']['rate'])
+              actual_lat  = int(m['http_req_duration']['p(95)'])
+              actual_err  = float(m['http_req_failed']['rate'])
               check_fails = int(r['checks']['status_is_correct']['fails'])
               lat_limit, err_limit, expected_st = int(os.environ['LATENCY_THRESHOLD']), float(os.environ['ERROR_RATE_LIMIT']), os.environ['EXPECTED_STATUS']
               report = "AUDIT DETAILS:"
