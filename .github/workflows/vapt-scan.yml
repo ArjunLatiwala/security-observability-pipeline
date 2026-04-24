@@ -130,37 +130,96 @@ jobs:
           EXPECTED_STATUS: ${{ env.EXPECTED_STATUS }}
         run: |
           python3 - <<'PYEOF'
-          import json, os, datetime, urllib.request, ssl, base64
-          result_path = 'result.json'
-          if os.path.exists(result_path):
-              with open(result_path) as f: d = json.load(f)
-              m = d['metrics']; r = d['root_group']
-              actual_lat  = int(m['http_req_duration']['p(95)'])
-              actual_err  = float(m['http_req_failed']['rate'])
-              check_fails = int(r['checks']['status_is_correct']['fails'])
-              lat_limit, err_limit, expected_st = int(os.environ['LATENCY_THRESHOLD']), float(os.environ['ERROR_RATE_LIMIT']), os.environ['EXPECTED_STATUS']
-              report = "AUDIT DETAILS:"
-              if actual_lat > lat_limit: report += f" | LATENCY BREACH: Observed {actual_lat}ms"
-              if actual_err > err_limit: report += f" | RELIABILITY FAIL: Error rate {actual_err:.4f}"
-              if check_fails > 0: report += f" | STATUS MISMATCH: {check_fails} failures"
-              if report == "AUDIT DETAILS:":
-                  report = "PASS: All metrics within thresholds."
-                  audit_status = "success"
-              else: audit_status = "failure"
-          else:
-              actual_lat, actual_err, check_fails, report, audit_status = 0, 0.0, 0, "CRITICAL: No result.json", "failure"
-          
-          payload = {
-              "timestamp": datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
-              "event_type": "PERFORMANCE_AUDIT", "product_id": os.environ['DEFECTDOJO_PRODUCT_ID'],
-              "repo": os.environ['REPO_NAME'], "status": audit_status,
-              "latency_observed_ms": actual_lat, "error_rate_observed": actual_err,
-              "status_check_fails": check_fails, "breach_details": report, "run_url": os.environ['RUN_URL']
-          }
-          auth = base64.b64encode(f"admin:{os.environ['WAZUH_INDEXER_PASSWORD']}".encode()).decode()
-          req = urllib.request.Request(os.environ['WAZUH_INDEXER_URL'] + '/pipeline-audit/_doc/', data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', 'Authorization': f'Basic {auth}'}, method='POST')
-          with urllib.request.urlopen(req, context=ssl._create_unverified_context()) as resp: print(resp.read().decode())
-          with open(os.environ['GITHUB_ENV'], 'a') as f_env: f_env.write(f"AUDIT_REPORT={report}\n")
+          import json, os, datetime, urllib.request, ssl, base64, traceback, sys
+        
+          try:
+              result_path = 'result.json'
+              print(f"result.json exists: {os.path.exists(result_path)}", flush=True)
+              
+              if os.path.exists(result_path):
+                  with open(result_path) as f:
+                      d = json.load(f)
+                  
+                  m = d['metrics']
+                  r = d['root_group']
+                  
+                  print(f"metrics keys: {list(m.keys())}", flush=True)
+                  print(f"http_req_duration keys: {list(m['http_req_duration'].keys())}", flush=True)
+                  print(f"http_req_failed keys: {list(m['http_req_failed'].keys())}", flush=True)
+                  print(f"root_group checks keys: {list(r['checks'].keys())}", flush=True)
+                  
+                  actual_lat  = int(m['http_req_duration']['p(95)'])
+                  actual_err  = float(m['http_req_failed']['value'])
+                  check_fails = int(r['checks']['status_is_correct']['fails'])
+                  lat_limit   = int(os.environ['LATENCY_THRESHOLD'])
+                  err_limit   = float(os.environ['ERROR_RATE_LIMIT'])
+                  expected_st = os.environ['EXPECTED_STATUS']
+        
+                  print(f"actual_lat={actual_lat}, actual_err={actual_err}, check_fails={check_fails}", flush=True)
+        
+                  report = "AUDIT DETAILS:"
+                  if actual_lat > lat_limit:
+                      report += f" | LATENCY BREACH: Observed {actual_lat}ms (Limit: {lat_limit}ms)"
+                  if actual_err > err_limit:
+                      report += f" | RELIABILITY FAIL: Error rate was {actual_err:.4f} (Limit: {err_limit})"
+                  if check_fails > 0:
+                      report += f" | STATUS MISMATCH: {check_fails} requests got unexpected status, expected {expected_st}"
+                  if report == "AUDIT DETAILS:":
+                      report = "PASS: All metrics within industry thresholds."
+                      audit_status = "success"
+                  else:
+                      audit_status = "failure"
+              else:
+                  actual_lat, actual_err, check_fails = 0, 0.0, 0
+                  lat_limit   = int(os.environ.get('LATENCY_THRESHOLD', 0))
+                  expected_st = os.environ.get('EXPECTED_STATUS', '0')
+                  report      = "CRITICAL: No result.json found."
+                  audit_status = "failure"
+        
+              payload = {
+                  "timestamp":            datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                  "event_type":           "PERFORMANCE_AUDIT",
+                  "product_id":           os.environ['DEFECTDOJO_PRODUCT_ID'],
+                  "repo":                 os.environ['REPO_NAME'],
+                  "status":               audit_status,
+                  "threshold":            f"p(95)<{os.environ['LATENCY_THRESHOLD']}ms | error_rate<{os.environ['ERROR_RATE_LIMIT']} | status=={os.environ['EXPECTED_STATUS']}",
+                  "latency_observed_ms":  actual_lat,
+                  "latency_threshold_ms": int(os.environ['LATENCY_THRESHOLD']),
+                  "error_rate_observed":  actual_err,
+                  "error_rate_limit":     float(os.environ['ERROR_RATE_LIMIT']),
+                  "expected_status_code": int(os.environ['EXPECTED_STATUS']),
+                  "status_check_fails":   check_fails,
+                  "breach_details":       report,
+                  "run_url":              os.environ['RUN_URL']
+              }
+        
+              print(f"Sending payload: {json.dumps(payload, indent=2)}", flush=True)
+        
+              url  = os.environ['WAZUH_INDEXER_URL'] + '/pipeline-audit/_doc/'
+              auth = base64.b64encode(f"admin:{os.environ['WAZUH_INDEXER_PASSWORD']}".encode()).decode()
+              req  = urllib.request.Request(
+                  url,
+                  data=json.dumps(payload).encode(),
+                  headers={'Content-Type': 'application/json', 'Authorization': f'Basic {auth}'},
+                  method='POST'
+              )
+              ctx = ssl._create_unverified_context()
+              with urllib.request.urlopen(req, context=ctx) as resp:
+                  response_body = resp.read().decode()
+                  print(f"Wazuh response ({resp.status}): {response_body}", flush=True)
+        
+              with open(os.environ['GITHUB_ENV'], 'a') as f_env:
+                  f_env.write(f"AUDIT_STATUS={audit_status}\n")
+                  f_env.write(f"AUDIT_REPORT={report}\n")
+                  f_env.write(f"ACTUAL_LAT={actual_lat}\n")
+                  f_env.write(f"ACTUAL_ERR={actual_err}\n")
+                  f_env.write(f"CHECK_FAILS={check_fails}\n")
+        
+          except Exception as e:
+              print(f"ERROR: {e}", flush=True)
+              traceback.print_exc()
+              sys.exit(1)
+        
           PYEOF
 
       - name: Send Google Chat Alert on Failure
