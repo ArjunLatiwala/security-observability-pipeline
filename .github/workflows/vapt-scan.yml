@@ -105,31 +105,35 @@ jobs:
       - name: Log Performance Audit to Wazuh Indexer
         if: failure()
         run: |
-          echo "=== result.json contents ==="
-          cat result.json || echo "FILE NOT FOUND"
-          echo "=== end ==="
           if [ -f result.json ]; then
-            # Correct field paths for k6 summary-export format
-            ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values["p(98)"] // .metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
-            ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
-            # checks.values.rate is 0-1, anything under 1.0 means a check failed
-            ACTUAL_CHECK_RATE=$(jq -r '.metrics.checks.values.rate // 1' result.json)
+            # Correct paths matching your actual k6 JSON structure
+            ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.avg // 0' result.json | cut -d. -f1)
+            ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.value // 0' result.json)
+            CHECK_FAILS=$(jq -r '.metrics.checks.fails // 0' result.json)
+            CHECK_PASSES=$(jq -r '.metrics.checks.passes // 0' result.json)
+      
+            # Check threshold breach flags directly from k6
+            LAT_THRESHOLD_BREACHED=$(jq -r '
+              .metrics.http_req_duration.thresholds // {} | 
+              to_entries | map(select(.value == false)) | length' result.json)
+            ERR_THRESHOLD_BREACHED=$(jq -r '
+              .metrics.http_req_failed.thresholds // {} | 
+              to_entries | map(select(.value == false)) | length' result.json)
       
             REPORT="AUDIT DETAILS:"
       
-            if [ "$ACTUAL_LAT" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then
+            if [ "$LAT_THRESHOLD_BREACHED" -gt 0 ]; then
               REPORT="$REPORT | LATENCY BREACH: Observed ${ACTUAL_LAT}ms (Limit: ${{ env.LATENCY_THRESHOLD }}ms)"
             fi
       
-            if (( $(echo "$ACTUAL_ERR > ${{ env.ERROR_RATE_LIMIT }}" | bc -l) )); then
-              REPORT="$REPORT | RELIABILITY FAIL: Error rate was ${ACTUAL_ERR} (Limit: ${{ env.ERROR_RATE_LIMIT }})"
+            if [ "$ERR_THRESHOLD_BREACHED" -gt 0 ]; then
+              REPORT="$REPORT | RELIABILITY FAIL: Error rate threshold breached (Limit: ${{ env.ERROR_RATE_LIMIT }})"
             fi
       
-            if (( $(echo "$ACTUAL_CHECK_RATE < 1.0" | bc -l) )); then
-              REPORT="$REPORT | STATUS MISMATCH: All requests returned HTTP 200 but pipeline expected ${{ env.EXPECTED_STATUS }}"
+            if [ "$CHECK_FAILS" -gt 0 ]; then
+              REPORT="$REPORT | STATUS MISMATCH: ${CHECK_FAILS} requests got HTTP 200, expected ${{ env.EXPECTED_STATUS }}"
             fi
       
-            # If nothing was appended, it's a genuine pass
             if [ "$REPORT" = "AUDIT DETAILS:" ]; then
               REPORT="PASS: All metrics within industry thresholds."
             fi
@@ -137,6 +141,9 @@ jobs:
             REPORT="CRITICAL: Benchmarking engine failed to generate results."
             ACTUAL_LAT=0
             ACTUAL_ERR=0
+            CHECK_FAILS=0
+            LAT_THRESHOLD_BREACHED=0
+            ERR_THRESHOLD_BREACHED=0
           fi
       
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -154,6 +161,7 @@ jobs:
               \"error_rate_observed\": $ACTUAL_ERR,
               \"error_rate_limit\": ${{ env.ERROR_RATE_LIMIT }},
               \"expected_status_code\": ${{ env.EXPECTED_STATUS }},
+              \"status_check_fails\": $CHECK_FAILS,
               \"breach_details\": \"$REPORT\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
