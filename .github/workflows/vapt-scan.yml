@@ -140,28 +140,29 @@ jobs:
           LATENCY_LIMIT: ${{ env.LATENCY_THRESHOLD }}
           ERROR_LIMIT: ${{ env.ERROR_RATE_LIMIT }}
           EXPECTED_ST: ${{ env.EXPECTED_STATUS }}
+          # --- FIXED: ADDED MISSING SECRETS FOR CLOUD LOGS ---
+          K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+          K6_CLOUD_PROJECT_ID: 7324608
+          K6_CLOUD_NAME: "${{ github.event.repository.name }}"
           
       - name: Log Performance Audit to Wazuh Indexer
         if: always()
         run: |
           if [ -f result.json ]; then
-            ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.avg // 0' result.json | cut -d. -f1)
-            ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.value // 0' result.json)
-            CHECK_FAILS=$(jq -r '.metrics.checks.fails // 0' result.json)
+            # --- FIXED: CORRECTED JQ PATHS (.values added) ---
+            ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
+            ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
+            CHECK_FAILS=$(jq -r '.metrics.checks.values.fails // 0' result.json)
       
             REPORT="AUDIT DETAILS:"
-      
-            # Direct numeric comparison — never trust k6's threshold flags
             if [ "$ACTUAL_LAT" -gt "${{ env.LATENCY_THRESHOLD }}" ]; then
               REPORT="$REPORT | LATENCY BREACH: Observed ${ACTUAL_LAT}ms (Limit: ${{ env.LATENCY_THRESHOLD }}ms)"
             fi
-      
             if (( $(echo "$ACTUAL_ERR > ${{ env.ERROR_RATE_LIMIT }}" | bc -l) )); then
               REPORT="$REPORT | RELIABILITY FAIL: Error rate was ${ACTUAL_ERR} (Limit: ${{ env.ERROR_RATE_LIMIT }})"
             fi
-      
             if [ "$CHECK_FAILS" -gt 0 ]; then
-              REPORT="$REPORT | STATUS MISMATCH: ${CHECK_FAILS} requests got unexpected status, expected ${{ env.EXPECTED_STATUS }}"
+              REPORT="$REPORT | STATUS MISMATCH: ${CHECK_FAILS} requests got unexpected status"
             fi
       
             if [ "$REPORT" = "AUDIT DETAILS:" ]; then
@@ -170,13 +171,9 @@ jobs:
             else
               AUDIT_STATUS="failure"
             fi
-      
           else
             REPORT="CRITICAL: Benchmarking engine failed to generate results."
-            ACTUAL_LAT=0
-            ACTUAL_ERR=0
-            CHECK_FAILS=0
-            AUDIT_STATUS="failure"
+            ACTUAL_LAT=0; ACTUAL_ERR=0; CHECK_FAILS=0; AUDIT_STATUS="failure"
           fi
       
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -189,12 +186,9 @@ jobs:
               \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
               \"repo\": \"${{ github.event.repository.name }}\",
               \"status\": \"$AUDIT_STATUS\",
-              \"threshold\": \"p(95)<${{ env.LATENCY_THRESHOLD }}ms | error_rate<${{ env.ERROR_RATE_LIMIT }} | status==${{ env.EXPECTED_STATUS }}\",
               \"latency_observed_ms\": $ACTUAL_LAT,
               \"latency_threshold_ms\": ${{ env.LATENCY_THRESHOLD }},
               \"error_rate_observed\": $ACTUAL_ERR,
-              \"error_rate_limit\": ${{ env.ERROR_RATE_LIMIT }},
-              \"expected_status_code\": ${{ env.EXPECTED_STATUS }},
               \"status_check_fails\": $CHECK_FAILS,
               \"breach_details\": \"$REPORT\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
@@ -203,10 +197,9 @@ jobs:
       - name: Send Google Chat Alert on Failure
         if: failure()
         run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-      
-          ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values["p(95)"] // 25' result.json | awk '{print int($1)}')
-          ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0.05' result.json)
+          # --- FIXED: CORRECTED JQ PATHS FOR CHAT ---
+          ACTUAL_LAT=$(jq -r '.metrics.http_req_duration.values.avg // 0' result.json | cut -d. -f1)
+          ACTUAL_ERR=$(jq -r '.metrics.http_req_failed.values.rate // 0' result.json)
           ACTUAL_STATUS=$(jq -r '.metrics.checks.values.rate // 0' result.json)
       
           LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
@@ -215,31 +208,25 @@ jobs:
       
           FAILURES=""
           if (( ACTUAL_LAT > LAT_LIMIT )); then
-            FAILURES="${FAILURES}• Latency: ${ACTUAL_LAT}ms (Limit ${LAT_LIMIT}ms) - Website is too slow for users, resulting in a degraded experience."$'\n'
+            FAILURES="${FAILURES}• Latency: ${ACTUAL_LAT}ms (Limit ${LAT_LIMIT}ms) - Website is too slow for users."$'\n'
           fi
           if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
-            FAILURES="${FAILURES}• Errors: ${ACTUAL_ERR} (Limit ${ERR_LIMIT}) - Server is unstable and may be dropping connections or returning 500s."$'\n'
+            FAILURES="${FAILURES}• Errors: ${ACTUAL_ERR} (Limit ${ERR_LIMIT}) - Server is unstable."$'\n'
           fi
           if (( $(echo "$ACTUAL_STATUS < 1.0" | bc -l) )); then
-            FAILURES="${FAILURES}• Status: Found 200 (Expected ${EXPECTED_ST}) - Server is alive but returned an incorrect status, indicating a logic error."$'\n'
+            FAILURES="${FAILURES}• Status: Found status code error (Expected ${EXPECTED_ST}) - Potential logic error."$'\n'
           fi
-          if [ -z "$FAILURES" ]; then
-            FAILURES="• Pipeline step failed. Check the GitHub Actions logs for details."$'\n'
-          fi
-      
-          # Build message using printf for clean newlines
-          MESSAGE=$(printf '🚨 *CRITICAL: PIPELINE FAILURE DETECTED*\n Repository: %s\n Product ID: %s\n *Failure Analysis:*\n%s\n Action: <%s|Investigate Logs in GitHub>\n Audit Hub: <https://35.200.203.148|Wazuh Dashboard>' \
+          
+          MESSAGE=$(printf '🚨 *CRITICAL: PIPELINE FAILURE DETECTED*\n Repository: %s\n Product ID: %s\n *Failure Analysis:*\n%s\n Action: %s' \
             "${{ github.event.repository.name }}" \
             "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
             "$FAILURES" \
-            "$RUN_URL")
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
       
-          # Use jq to safely encode the message into JSON — no manual escaping
           jq -n --arg text "$MESSAGE" '{"text": $text}' | \
             curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
               -H "Content-Type: application/json" \
               -d @-
-      
           exit 1
 
       - name: Report Failure to Sentry
