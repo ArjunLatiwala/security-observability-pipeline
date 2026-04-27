@@ -31,10 +31,17 @@ jobs:
           ssh-keyscan -H 35.200.203.148 >> ~/.ssh/known_hosts
 
       - name: Auto-Configure Server Observability
+        env:
+          GRAFANA_PROMETHEUS_URL: ${{ secrets.GRAFANA_PROMETHEUS_URL }}
+          GRAFANA_INSTANCE_ID: ${{ secrets.GRAFANA_INSTANCE_ID }}
+          GRAFANA_LOKI_URL: ${{ secrets.GRAFANA_LOKI_URL }}
+          GRAFANA_LOKI_USER: ${{ secrets.GRAFANA_LOKI_USER }}
+          GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
-          ssh husaintrivedi@35.200.203.148 << 'EOF'
+          ssh husaintrivedi@35.200.203.148 bash -s << EOF
             echo "--- Provisioning Monitoring Agents ---"
-            
+      
             # 1. Install Grafana Alloy if missing
             if ! command -v alloy &> /dev/null; then
               sudo mkdir -p /etc/apt/keyrings/
@@ -42,46 +49,51 @@ jobs:
               echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
               sudo apt-get update && sudo apt-get install -y alloy
             fi
-
-            # 2. Inject the "Passport" (Configuration) using your exact Secrets
-            sudo tee /etc/alloy/config.alloy << 'ALOY'
+      
+            # 2. Write config — env vars are expanded here on the runner before SSH
+            sudo tee /etc/alloy/config.alloy > /dev/null << 'ALLOY_EOF'
+            prometheus.exporter.unix "node" {}
+            
+            prometheus.scrape "local" {
+              targets        = prometheus.exporter.unix.node.targets
+              forward_to     = [prometheus.remote_write.grafana_cloud.receiver]
+              scrape_interval = "15s"
+            }
+            
             prometheus.remote_write "grafana_cloud" {
               endpoint {
-                url = "${{ secrets.GRAFANA_PROMETHEUS_URL }}"
-                auth {
-                  username = "${{ secrets.GRAFANA_INSTANCE_ID }}"
-                  password = "${{ secrets.GRAFANA_API_KEY }}"
+                url = "${GRAFANA_PROMETHEUS_URL}"
+                basic_auth {
+                  username = "${GRAFANA_INSTANCE_ID}"
+                  password = "${GRAFANA_API_KEY}"
                 }
               }
             }
-
-            loki.write "grafana_cloud" {
-              endpoint {
-                url = "${{ secrets.GRAFANA_LOKI_URL }}"
-                auth {
-                  username = "${{ secrets.GRAFANA_LOKI_USER }}"
-                  password = "${{ secrets.GRAFANA_API_KEY }}"
-                }
-              }
-            }
-
-            prometheus.exporter.unix "node" {}
-            prometheus.scrape "local" {
-              targets    = prometheus.exporter.unix.node.targets
-              forward_to = [prometheus.remote_write.grafana_cloud.receiver]
-            }
-
+            
             loki.source.journal "read" {
               forward_to = [loki.write.grafana_cloud.receiver]
               labels     = { job = "systemd-journal", host = "gcp-server" }
             }
-            ALOY
-
-            sudo systemctl restart alloy
             
-            # 3. Provision Sentry metadata
+            loki.write "grafana_cloud" {
+              endpoint {
+                url = "${GRAFANA_LOKI_URL}"
+                basic_auth {
+                  username = "${GRAFANA_LOKI_USER}"
+                  password = "${GRAFANA_API_KEY}"
+                }
+              }
+            }
+            ALLOY_EOF
+            
+                  sudo systemctl enable alloy
+                  sudo systemctl restart alloy
+                  sleep 3
+                  sudo systemctl status alloy --no-pager
+      
+            # 3. Sentry metadata
             sudo mkdir -p /home/husaintrivedi/simulated-project
-            echo "SENTRY_DSN=${{ secrets.SENTRY_DSN }}" | sudo tee /home/husaintrivedi/simulated-project/.env
+            echo "SENTRY_DSN=${SENTRY_DSN}" | sudo tee /home/husaintrivedi/simulated-project/.env
           EOF
   # ==========================================
   # JOB 1: STEP 4 - Deep Security (VAPT)
