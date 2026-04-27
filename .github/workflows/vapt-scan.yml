@@ -343,7 +343,9 @@ jobs:
                 \"latency_threshold_ms\": \"${{ env.LATENCY_THRESHOLD }}\",
                 \"error_rate_observed\": \"${ACTUAL_ERR}\",
                 \"error_rate_limit\": \"${{ env.ERROR_RATE_LIMIT }}\",
-                \"status_check_fails\": \"${CHECK_FAILS}\"
+                \"status_check_fails\": \"${CHECK_FAILS}\",
+                \"status_code_expected\": \"${{ env.EXPECTED_STATUS }}\",
+                \"breach_summary\": \"${AUDIT_REPORT}\"
               }
             }"
 
