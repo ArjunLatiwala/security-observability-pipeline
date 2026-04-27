@@ -81,7 +81,6 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
       - name: Register Repo with Sentry
         run: |
           curl -X POST "https://sentry.io/api/0/organizations/creole-studios-xj/repos/" \
@@ -89,26 +88,26 @@ jobs:
             -H 'Content-Type: application/json' \
             -d "{
               \"provider\": \"integrations:github\",
+              \"integration_id\": \"404660\",
               \"identifier\": \"${{ github.repository }}\"
             }" 2>/dev/null || true
-  
+      
       - name: Create Sentry Release
         run: |
           PREVIOUS_COMMIT=$(git rev-parse HEAD~1 2>/dev/null || echo "")
-          
+      
           curl -X POST "https://sentry.io/api/0/organizations/creole-studios-xj/releases/" \
             -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
             -H 'Content-Type: application/json' \
             -d "{
               \"version\": \"${{ github.sha }}\",
-              \"projects\": [\"YOUR-PROJECT-SLUG-HERE\"],
+              \"projects\": [\"security-pipeline\"],
               \"refs\": [{
                 \"repository\": \"${{ github.repository }}\",
                 \"commit\": \"${{ github.sha }}\",
                 \"previousCommit\": \"${PREVIOUS_COMMIT}\"
               }]
             }"
-
       - name: Setup Tools (k6, jq, Apache Bench)
         run: sudo apt-get update && sudo apt-get install -y apache2-utils jq curl
 
