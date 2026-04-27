@@ -130,6 +130,7 @@ jobs:
   # JOB 2: STEP 5 - Benchmarking + Sentry
   # ==========================================
   benchmarking_job:
+    needs: provision_monitoring
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
