@@ -20,6 +20,9 @@ jobs:
   provision_monitoring:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Setup SSH Key
         run: |
           mkdir -p ~/.ssh
@@ -27,43 +30,58 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H 35.200.203.148 >> ~/.ssh/known_hosts
 
-      - name: Auto-Configure Infrastructure Monitoring
+      - name: Auto-Configure Server Observability
         run: |
           ssh husaintrivedi@35.200.203.148 << 'EOF'
-            echo "--- Starting Infrastructure Observability Setup ---"
+            echo "--- Provisioning Monitoring Agents ---"
             
-            # 1. GRAFANA ALLOY (Infrastructure Metrics & Logs)
-            if command -v alloy &> /dev/null; then
-              echo "✅ Grafana Alloy (Infra Monitor) already active."
-            else
-              echo "⚠️ Installing Grafana Alloy to monitor Server Vitals..."
+            # 1. Install Grafana Alloy if missing
+            if ! command -v alloy &> /dev/null; then
               sudo mkdir -p /etc/apt/keyrings/
               curl -fsSL https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null
               echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
               sudo apt-get update && sudo apt-get install -y alloy
-              sudo systemctl enable --now alloy
             fi
 
-            # 2. SENTRY SIMULATION (Application Error Tracking)
-            # We simulate a 'Project Directory' so the pipeline logic has a place to work
-            DUMMY_PROJECT_DIR="/home/husaintrivedi/simulated-project"
-            sudo mkdir -p $DUMMY_PROJECT_DIR
+            # 2. Inject the "Passport" (Configuration) using your exact Secrets
+            sudo tee /etc/alloy/config.alloy << 'ALOY'
+            prometheus.remote_write "grafana_cloud" {
+              endpoint {
+                url = "${{ secrets.GRAFANA_PROMETHEUS_URL }}"
+                auth {
+                  username = "${{ secrets.GRAFANA_INSTANCE_ID }}"
+                  password = "${{ secrets.GRAFANA_API_KEY }}"
+                }
+              }
+            }
 
-            if [ -f "$DUMMY_PROJECT_DIR/.env" ]; then
-              echo "✅ Sentry metadata already present in simulated project."
-            else
-              echo "⚠️ Injecting Sentry DSN into simulated project environment..."
-              echo "SENTRY_DSN=${{ secrets.SENTRY_DSN }}" | sudo tee $DUMMY_PROJECT_DIR/.env
-              echo "✅ Sentry bridge established."
-            fi
+            loki.write "grafana_cloud" {
+              endpoint {
+                url = "${{ secrets.GRAFANA_LOKI_URL }}"
+                auth {
+                  username = "${{ secrets.GRAFANA_LOKI_USER }}"
+                  password = "${{ secrets.GRAFANA_API_KEY }}"
+                }
+              }
+            }
 
-            # 3. WAZUH AGENT (Security Auditing)
-            if systemctl is-active --quiet wazuh-agent; then
-              echo "✅ Wazuh Security Agent is guarding the host."
-            else
-              echo "⚠️ Wazuh Agent missing. Preparing server for security enrollment..."
-              # In a real setup, we'd run the Wazuh Agent install command here
-            fi
+            prometheus.exporter.unix "node" {}
+            prometheus.scrape "local" {
+              targets    = prometheus.exporter.unix.node.targets
+              forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+            }
+
+            loki.source.journal "read" {
+              forward_to = [loki.write.grafana_cloud.receiver]
+              labels     = { job = "systemd-journal", host = "gcp-server" }
+            }
+            ALOY
+
+            sudo systemctl restart alloy
+            
+            # 3. Provision Sentry metadata
+            sudo mkdir -p /home/husaintrivedi/simulated-project
+            echo "SENTRY_DSN=${{ secrets.SENTRY_DSN }}" | sudo tee /home/husaintrivedi/simulated-project/.env
           EOF
   # ==========================================
   # JOB 1: STEP 4 - Deep Security (VAPT)
