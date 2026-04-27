@@ -183,6 +183,7 @@ jobs:
                   audit_status = "failure"
         
               payload = {
+                  "timestamp":            datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
                   "event_type":           "PERFORMANCE_AUDIT",
                   "product_id":           os.environ['DEFECTDOJO_PRODUCT_ID'],
                   "repo":                 os.environ['REPO_NAME'],
@@ -230,6 +231,7 @@ jobs:
         if: failure()
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
           INCIDENT_ID="INC-${{ github.run_number }}"
       
           ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
@@ -257,6 +259,7 @@ jobs:
           MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
           Incident ID : %s
+          Time        : %s
           Repository  : %s
           Product ID  : %s
           Target      : %s
