@@ -288,17 +288,48 @@ jobs:
                   -d @-
           
               exit 1
-
+              
       - name: Report Failure to Sentry
         if: failure()
         run: |
           DSN="${{ secrets.SENTRY_DSN }}"
-          SENTRY_HOST=$(echo $DSN | awk -F'[:@/]' '{print $5}')
-          PROJECT_ID=$(echo $DSN | awk -F'[:@/]' '{print $6}')
+          SENTRY_KEY=$(echo "$DSN" | sed 's|https://||' | cut -d'@' -f1)
+          SENTRY_HOST=$(echo "$DSN" | cut -d'@' -f2 | cut -d'/' -f1)
+          PROJECT_ID=$(echo "$DSN" | rev | cut -d'/' -f1 | rev)
+      
+          ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
+          ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
+          CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
+      
           curl -X POST "https://$SENTRY_HOST/api/$PROJECT_ID/store/" \
-            -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$(echo $DSN | awk -F'[:@/]' '{print $4}'), sentry_client=curl/1.0" \
+            -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$SENTRY_KEY, sentry_client=curl/1.0" \
             -H 'Content-Type: application/json' \
-            -d "{\"message\": \"Performance Regression: ${{ github.event.repository.name }}\", \"level\": \"error\"}"
+            -d "{
+              \"message\": \"Pipeline Failures: ${{ github.event.repository.name }}\",
+              \"exception\": {
+                \"values\": [{
+                  \"type\": \"PipelineFailure\",
+                  \"value\": \"One or more thresholds breached in ${{ github.event.repository.name }}\"
+                }]
+              },
+              \"level\": \"error\",
+              \"environment\": \"${{ github.event.repository.name }}\",
+              \"release\": \"${{ github.sha }}\",
+              \"fingerprint\": [\"pipeline-failure\", \"${{ github.event.repository.name }}\"],
+              \"tags\": {
+                \"repo\": \"${{ github.event.repository.name }}\",
+                \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
+                \"triggered_by\": \"github-actions\"
+              },
+              \"extra\": {
+                \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+                \"latency_observed_ms\": \"${ACTUAL_LAT}\",
+                \"latency_threshold_ms\": \"${{ env.LATENCY_THRESHOLD }}\",
+                \"error_rate_observed\": \"${ACTUAL_ERR}\",
+                \"error_rate_limit\": \"${{ env.ERROR_RATE_LIMIT }}\",
+                \"status_check_fails\": \"${CHECK_FAILS}\"
+              }
+            }"
 
       - name: Upload Benchmarking Logs
         if: always()
