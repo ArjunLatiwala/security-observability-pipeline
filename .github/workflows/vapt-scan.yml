@@ -321,10 +321,10 @@ jobs:
             -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$SENTRY_KEY, sentry_client=curl/1.0" \
             -H 'Content-Type: application/json' \
             -d "{
-              \"message\": \"Pipeline Failures: ${{ github.event.repository.name }}\",
+              \"message\": \"Pipeline Failure: ${{ github.event.repository.name }}\",
               \"exception\": {
                 \"values\": [{
-                  \"type\": \"PipelineFailure\",
+                  \"type\": \"Pipeline Failure: [${{ github.event.repository.name }}]\",
                   \"value\": \"One or more thresholds breached in ${{ github.event.repository.name }}\"
                 }]
               },
