@@ -81,16 +81,6 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-      - name: Register Repo with Sentry
-        run: |
-          curl -X POST "https://sentry.io/api/0/organizations/creole-studios-xj/repos/" \
-            -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"provider\": \"integrations:github\",
-              \"integration_id\": \"404660\",
-              \"identifier\": \"${{ github.repository }}\"
-            }" 2>/dev/null || true
       
       - name: Create Sentry Release
         run: |
@@ -101,7 +91,7 @@ jobs:
             -H 'Content-Type: application/json' \
             -d "{
               \"version\": \"${{ github.sha }}\",
-              \"projects\": [\"security-pipeline\"],
+              \"projects\": [\"security-observability-pipeline\"],
               \"refs\": [{
                 \"repository\": \"${{ github.repository }}\",
                 \"commit\": \"${{ github.sha }}\",
