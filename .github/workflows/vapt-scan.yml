@@ -39,10 +39,49 @@ jobs:
           GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
-          ssh husaintrivedi@35.200.203.148 bash -s << EOF
+          # Write config file locally on the runner first
+          cat > /tmp/config.alloy << EOF
+          prometheus.exporter.unix "node" {}
+          
+          prometheus.scrape "local" {
+            targets         = prometheus.exporter.unix.node.targets
+            forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+            scrape_interval = "15s"
+          }
+          
+          prometheus.remote_write "grafana_cloud" {
+            endpoint {
+              url = "${GRAFANA_PROMETHEUS_URL}"
+              basic_auth {
+                username = "${GRAFANA_INSTANCE_ID}"
+                password = "${GRAFANA_API_KEY}"
+              }
+            }
+          }
+          
+          loki.source.journal "read" {
+            forward_to = [loki.write.grafana_cloud.receiver]
+            labels     = { job = "systemd-journal", host = "gcp-server" }
+          }
+          
+          loki.write "grafana_cloud" {
+            endpoint {
+              url = "${GRAFANA_LOKI_URL}"
+              basic_auth {
+                username = "${GRAFANA_LOKI_USER}"
+                password = "${GRAFANA_API_KEY}"
+              }
+            }
+          }
+          EOF
+      
+          # Copy config to server, then run setup commands
+          scp /tmp/config.alloy husaintrivedi@35.200.203.148:/tmp/config.alloy
+      
+          ssh husaintrivedi@35.200.203.148 << 'SSHEOF'
             echo "--- Provisioning Monitoring Agents ---"
       
-            # 1. Install Grafana Alloy if missing
+            # Install Alloy if missing
             if ! command -v alloy &> /dev/null; then
               sudo mkdir -p /etc/apt/keyrings/
               curl -fsSL https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null
@@ -50,51 +89,17 @@ jobs:
               sudo apt-get update && sudo apt-get install -y alloy
             fi
       
-            # 2. Write config — env vars are expanded here on the runner before SSH
-            sudo tee /etc/alloy/config.alloy > /dev/null << 'ALLOY_EOF'
-            prometheus.exporter.unix "node" {}
-            
-            prometheus.scrape "local" {
-              targets        = prometheus.exporter.unix.node.targets
-              forward_to     = [prometheus.remote_write.grafana_cloud.receiver]
-              scrape_interval = "15s"
-            }
-            
-            prometheus.remote_write "grafana_cloud" {
-              endpoint {
-                url = "${GRAFANA_PROMETHEUS_URL}"
-                basic_auth {
-                  username = "${GRAFANA_INSTANCE_ID}"
-                  password = "${GRAFANA_API_KEY}"
-                }
-              }
-            }
-            
-            loki.source.journal "read" {
-              forward_to = [loki.write.grafana_cloud.receiver]
-              labels     = { job = "systemd-journal", host = "gcp-server" }
-            }
-            
-            loki.write "grafana_cloud" {
-              endpoint {
-                url = "${GRAFANA_LOKI_URL}"
-                basic_auth {
-                  username = "${GRAFANA_LOKI_USER}"
-                  password = "${GRAFANA_API_KEY}"
-                }
-              }
-            }
-            ALLOY_EOF
-            
-                  sudo systemctl enable alloy
-                  sudo systemctl restart alloy
-                  sleep 3
-                  sudo systemctl status alloy --no-pager
+            # Move config into place
+            sudo cp /tmp/config.alloy /etc/alloy/config.alloy
+            sudo systemctl enable alloy
+            sudo systemctl restart alloy
+            sleep 3
+            sudo systemctl status alloy --no-pager
       
-            # 3. Sentry metadata
+            # Sentry metadata
             sudo mkdir -p /home/husaintrivedi/simulated-project
-            echo "SENTRY_DSN=${SENTRY_DSN}" | sudo tee /home/husaintrivedi/simulated-project/.env
-          EOF
+            echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /home/husaintrivedi/simulated-project/.env
+          SSHEOF
   # ==========================================
   # JOB 1: STEP 4 - Deep Security (VAPT)
   # ==========================================
