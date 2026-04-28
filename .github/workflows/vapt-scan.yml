@@ -36,11 +36,15 @@ jobs:
           GRAFANA_INSTANCE_ID: ${{ secrets.GRAFANA_INSTANCE_ID }}
           GRAFANA_LOKI_URL: ${{ secrets.GRAFANA_LOKI_URL }}
           GRAFANA_LOKI_USER: ${{ secrets.GRAFANA_LOKI_USER }}
+          GRAFANA_TEMPO_URL: ${{ secrets.GRAFANA_TEMPO_URL }}
+          GRAFANA_TEMPO_USER: ${{ secrets.GRAFANA_TEMPO_USER }}
           GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           # Write config file locally on the runner first
           cat > /tmp/config.alloy << EOF
+          
+          // 1. Metrics (Prometheus)
           prometheus.exporter.unix "node" {}
           
           prometheus.scrape "local" {
@@ -59,6 +63,7 @@ jobs:
             }
           }
           
+          // 2. Logs (Loki)
           loki.source.journal "read" {
             forward_to = [loki.write.grafana_cloud.receiver]
             labels     = { job = "systemd-journal", host = "gcp-server" }
@@ -71,6 +76,27 @@ jobs:
                 username = "${GRAFANA_LOKI_USER}"
                 password = "${GRAFANA_API_KEY}"
               }
+            }
+          }
+          
+          // 3. Traces / APM (Tempo)
+          otelcol.receiver.otlp "default" {
+            http { endpoint = "0.0.0.0:4318" }
+            grpc { endpoint = "0.0.0.0:4317" }
+            output {
+              traces = [otelcol.exporter.otlp.grafana_cloud_traces.input]
+            }
+          }
+
+          otelcol.auth.basic "tempo" {
+            username = "${GRAFANA_TEMPO_USER}"
+            password = "${GRAFANA_API_KEY}"
+          }
+
+          otelcol.exporter.otlp "grafana_cloud_traces" {
+            client {
+              endpoint = "${GRAFANA_TEMPO_URL}"
+              auth     = otelcol.auth.basic.tempo.handler
             }
           }
           EOF
