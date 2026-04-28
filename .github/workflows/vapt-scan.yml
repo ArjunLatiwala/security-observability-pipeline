@@ -113,7 +113,16 @@ jobs:
               echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
               sudo apt-get update && sudo apt-get install -y alloy
             fi
-      
+            # =========================================================================================
+                  OTEL_RULE="NODE_OPTIONS='--require @opentelemetry/auto-instrumentations-node/register'"
+            if grep -q "NODE_OPTIONS" /etc/environment; then
+              echo "✅ System-wide OTel rule already exists."
+            else
+              echo "⚠️ Injecting OTel auto-instrumentation rule into /etc/environment..."
+              echo "$OTEL_RULE" | sudo tee -a /etc/environment
+              echo "✅ All Node.js applications on this server will now start with APM automatically."
+            fi
+            # =========================================================================================
             # Move config into place
             sudo cp /tmp/config.alloy /etc/alloy/config.alloy
             sudo systemctl enable alloy
@@ -144,103 +153,33 @@ jobs:
         run: |
           # ── app.js ─────────────────────────────────────────────
           cat > /tmp/app.js << 'APPEOF'
-          const { NodeSDK } = require('@opentelemetry/sdk-node');
-          const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-grpc');
-          const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
-          const { Resource } = require('@opentelemetry/resources');
-          const { SemanticResourceAttributes } = require('@opentelemetry/semantic-conventions');
-
-          // Point at Alloy's OTLP receiver (which forwards to Tempo)
-          const exporter = new OTLPTraceExporter({
-            url: 'grpc://localhost:4317',
-          });
-
-          const sdk = new NodeSDK({
-            resource: new Resource({
-              [SemanticResourceAttributes.SERVICE_NAME]: 'demo-pipeline-app',
-              [SemanticResourceAttributes.SERVICE_VERSION]: process.env.APP_VERSION || '1.0.0',
-              'deployment.environment': 'ci-test',
-            }),
-            traceExporter: exporter,
-            instrumentations: [getNodeAutoInstrumentations()],
-          });
-
-          sdk.start();
-
           const express = require('express');
-          const { trace, context, SpanStatusCode } = require('@opentelemetry/api');
           const app = express();
-          const tracer = trace.getTracer('demo-app');
 
-          // ── Routes ───────────────────────────────────────────
           app.get('/', (req, res) => {
-            const span = tracer.startSpan('handle-root');
-            context.with(trace.setSpan(context.active(), span), () => {
-              span.setAttribute('http.route', '/');
-              span.setAttribute('custom.demo', true);
-              setTimeout(() => {
-                span.setStatus({ code: SpanStatusCode.OK });
-                span.end();
-                res.json({ status: 'ok', service: 'demo-pipeline-app', timestamp: new Date().toISOString() });
-              }, Math.floor(Math.random() * 80) + 10); // Simulate 10-90ms work
+            res.json({ 
+              status: 'ok', 
+              message: 'This app has ZERO monitoring code, yet it is being traced!' 
             });
-          });
-
-          app.get('/health', (req, res) => {
-            res.json({ healthy: true });
           });
 
           app.get('/slow', (req, res) => {
-            const span = tracer.startSpan('handle-slow-endpoint');
-            context.with(trace.setSpan(context.active(), span), () => {
-              span.setAttribute('http.route', '/slow');
-              span.setAttribute('intentionally.slow', true);
-              setTimeout(() => {
-                span.setStatus({ code: SpanStatusCode.OK });
-                span.end();
-                res.json({ message: 'slow response', delay_ms: 300 });
-              }, 300);
-            });
+            setTimeout(() => {
+              res.json({ message: 'Still slow, still traced automatically' });
+            }, 300);
           });
 
-          app.get('/error', (req, res) => {
-            const span = tracer.startSpan('handle-error-endpoint');
-            context.with(trace.setSpan(context.active(), span), () => {
-              span.setAttribute('http.route', '/error');
-              span.recordException(new Error('Intentional demo error for APM testing'));
-              span.setStatus({ code: SpanStatusCode.ERROR, message: 'Demo error triggered' });
-              span.end();
-              res.status(500).json({ error: 'Intentional demo error', trace_id: span.spanContext().traceId });
-            });
-          });
+          app.listen(3000, () => console.log('🚀 Standard App live on port 3000'));
+          EOF
 
-          const PORT = 3000;
-          const server = app.listen(PORT, () => {
-            console.log(`Demo app running on port ${PORT}`);
-          });
-
-          // Graceful shutdown
-          process.on('SIGTERM', () => {
-            sdk.shutdown().finally(() => {
-              server.close(() => process.exit(0));
-            });
-          });
-          APPEOF
-
-          # ── package.json ────────────────────────────────────────
-          cat > /tmp/package.json << 'PKGEOF'
+          # We still need the libraries installed on the server
+          cat > /tmp/package.json << 'EOF'
           {
-            "name": "demo-pipeline-app",
-            "version": "1.0.0",
-            "main": "app.js",
             "dependencies": {
-              "express": "^4.18.2",
-              "@opentelemetry/sdk-node": "^0.51.0",
-              "@opentelemetry/api": "^1.8.0",
-              "@opentelemetry/auto-instrumentations-node": "^0.46.0",
-              "@opentelemetry/exporter-trace-otlp-grpc": "^0.51.0",
-              "@opentelemetry/resources": "^1.24.0",
-              "@opentelemetry/semantic-conventions": "^1.24.0"
+              "express": "^4.19.2",
+              "@opentelemetry/api": "^1.9.0",
+              "@opentelemetry/auto-instrumentations-node": "^0.49.1",
+              "@opentelemetry/sdk-node": "^0.52.1"
             }
           }
           PKGEOF
