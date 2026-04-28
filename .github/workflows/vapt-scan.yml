@@ -4,13 +4,26 @@ on:
   workflow_dispatch:
 
 env:
+  # --- TARGET ENVIRONMENT CONFIGURATION ---
   TARGET_URL: 'https://husaintrivedi.site'
+  TARGET_IP: '35.200.203.148'
+  SSH_USER: 'husaintrivedi'
+  
+  # --- WAZUH SERVER CONFIGURATION ---
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
   WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
-  # --- PRODUCTION CONFIGURATION ---
-  LATENCY_THRESHOLD: 10        # Standard 2s limit
-  EXPECTED_STATUS: 201           # Standard healthy status
-  ERROR_RATE_LIMIT: 0.0001         # 1% error tolerance
+  
+  # --- SENTRY CONFIGURATION ---
+  SENTRY_ORG_SLUG: 'creole-studios-xj'
+  SENTRY_PROJECT_SLUG: 'security-observability-pipeline'
+  
+  # --- GRAFANA / K6 CONFIGURATION ---
+  K6_PROJECT_ID: '7324608'
+  
+  # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
+  LATENCY_THRESHOLD: 10          # Fail: Real latency > 10ms (Set to 2000 for PROD)
+  EXPECTED_STATUS: 201           # Fail: Site is 200 (Set to 200 for PROD)
+  ERROR_RATE_LIMIT: 0.0001       # Fail: Tiny threshold (Set to 0.01 for PROD)
 
 jobs:
   # ==========================================
@@ -101,9 +114,9 @@ jobs:
           EOF
       
           # Copy config to server, then run setup commands
-          scp /tmp/config.alloy husaintrivedi@35.200.203.148:/tmp/config.alloy
+          scp /tmp/config.alloy ${{ env.SSH_USER }}@${{ env.TARGET_IP }}:/tmp/config.alloy
       
-          ssh husaintrivedi@35.200.203.148 << 'SSHEOF'
+          ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
             echo "--- Provisioning Monitoring Agents ---"
       
             # Install Alloy if missing
@@ -166,8 +179,8 @@ jobs:
             sudo systemctl status alloy --no-pager
       
             # Sentry metadata
-            sudo mkdir -p /home/husaintrivedi/simulated-project
-            echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /home/husaintrivedi/simulated-project/.env
+            sudo mkdir -p /home/${{ env.SSH_USER }}/simulated-project
+            echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /home/${{ env.SSH_USER }}/simulated-project/.env
           SSHEOF
 
   # ==========================================
@@ -182,7 +195,7 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H 35.200.203.148 >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ env.TARGET_IP }} >> ~/.ssh/known_hosts
 
       - name: Write Demo App to Server
         run: |
@@ -219,11 +232,11 @@ jobs:
           }
           PKGEOF
 
-          scp /tmp/app.js /tmp/package.json husaintrivedi@35.200.203.148:/tmp/
+          scp /tmp/app.js /tmp/package.json ${{ env.SSH_USER }}@${{ env.TARGET_IP }}:/tmp/
 
       - name: Install & Start Demo App on Server
         run: |
-          ssh husaintrivedi@35.200.203.148 << 'SSHEOF'
+          ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
             echo "--- Setting up demo app ---"
 
             # Ensure Node.js is available
@@ -233,15 +246,15 @@ jobs:
             fi
 
             # Kill any existing demo app instance
-            pkill -f "node /home/husaintrivedi/demo-app/app.js" 2>/dev/null || true
+            pkill -f "node /home/${{ env.SSH_USER }}/demo-app/app.js" 2>/dev/null || true
             sleep 1
 
             # Set up app directory
-            sudo mkdir -p /home/husaintrivedi/demo-app
-            sudo cp /tmp/app.js /tmp/package.json /home/husaintrivedi/demo-app/
-            sudo chown -R husaintrivedi:husaintrivedi /home/husaintrivedi/demo-app
+            sudo mkdir -p /home/${{ env.SSH_USER }}/demo-app
+            sudo cp /tmp/app.js /tmp/package.json /home/${{ env.SSH_USER }}/demo-app/
+            sudo chown -R ${{ env.SSH_USER }}:${{ env.SSH_USER }} /home/${{ env.SSH_USER }}/demo-app
 
-            cd /home/husaintrivedi/demo-app
+            cd /home/${{ env.SSH_USER }}/demo-app
             npm install --silent 2>&1 | tail -3
 
             set -a; [ -f /etc/environment ] && . /etc/environment; set +a;
@@ -263,7 +276,7 @@ jobs:
 
       - name: Generate APM Trace Data (Warm-up Requests)
         run: |
-          ssh husaintrivedi@35.200.203.148 << 'SSHEOF'
+          ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
             echo "--- Generating trace data ---"
 
             # Hit each route multiple times to produce varied trace spans in Tempo
@@ -292,7 +305,7 @@ jobs:
         if: always()
         run: |
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          STATUS=$(ssh husaintrivedi@35.200.203.148 "curl -sf http://localhost:3000/ > /dev/null && echo success || echo failure")
+          STATUS=$(ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} "curl -sf http://localhost:3000/ > /dev/null && echo success || echo failure")
           curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
             -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
             -H "Content-Type: application/json" \
@@ -384,12 +397,12 @@ jobs:
         run: |
           PREVIOUS_COMMIT=$(git rev-parse HEAD~1 2>/dev/null || echo "")
       
-          curl -X POST "https://sentry.io/api/0/organizations/creole-studios-xj/releases/" \
+          curl -X POST "https://sentry.io/api/0/organizations/${{ env.SENTRY_ORG_SLUG }}/releases/" \
             -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
             -H 'Content-Type: application/json' \
             -d "{
               \"version\": \"${{ github.sha }}\",
-              \"projects\": [\"security-observability-pipeline\"],
+              \"projects\": [\"${{ env.SENTRY_PROJECT_SLUG }}\"],
               \"refs\": [{
                 \"repository\": \"${{ github.repository }}\",
                 \"commit\": \"${{ github.sha }}\",
@@ -434,7 +447,7 @@ jobs:
           ERROR_LIMIT: ${{ env.ERROR_RATE_LIMIT }}
           EXPECTED_ST: ${{ env.EXPECTED_STATUS }}
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
-          K6_CLOUD_PROJECT_ID: 7324608
+          K6_CLOUD_PROJECT_ID: ${{ env.K6_PROJECT_ID }}
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
           
       - name: Log Performance Audit to Wazuh Indexer
