@@ -114,14 +114,32 @@ jobs:
               sudo apt-get update && sudo apt-get install -y alloy
             fi
             # =========================================================================================
+            if ! command -v node &> /dev/null; then
+            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+            sudo apt-get install -y nodejs
+            fi
+             # Install OTel globally so it's resolvable from any Node process on this server
+            if ! node -e "require('@opentelemetry/auto-instrumentations-node/register')" 2>/dev/null; then
+              echo "⚠️ Installing OTel auto-instrumentation globally..."
+              sudo npm install -g \
+                @opentelemetry/auto-instrumentations-node \
+                @opentelemetry/sdk-node \
+                @opentelemetry/api
+              echo "✅ OTel installed globally"
+            else
+              echo "✅ OTel already installed globally"
+            fi
+            
+            # Now this works for every Node app on this server — no app code changes needed
             OTEL_RULE="NODE_OPTIONS='--require @opentelemetry/auto-instrumentations-node/register'"
-            NODE_PATH="NODE_PATH='/home/husaintrivedi/demo-app/node_modules'"
             if grep -q "NODE_OPTIONS" /etc/environment; then
               echo "✅ System-wide OTel rule already exists."
             else
-              echo "⚠️ Injecting OTel auto-instrumentation rule into /etc/environment..."
-              echo "$OTEL_RULE" | sudo tee -a /etc/environment
-              echo "✅ All Node.js applications on this server will now start with APM automatically."
+              echo "⚠️ Injecting OTel auto-instrumentation into /etc/environment..."
+              echo 'NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register' | sudo tee -a /etc/environment
+              echo 'OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318' | sudo tee -a /etc/environment
+              echo 'OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf' | sudo tee -a /etc/environment
+              echo "✅ All Node.js apps on this server now send APM to Alloy automatically"
             fi
             # =========================================================================================
             # Move config into place
@@ -258,7 +276,7 @@ jobs:
         if: always()
         run: |
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          STATUS=$(ssh husaintrivedi@35.200.203.148 "curl -sf http://localhost:3000/health > /dev/null && echo success || echo failure")
+          STATUS=$(ssh husaintrivedi@35.200.203.148 "curl -sf http://localhost:3000/ > /dev/null && echo success || echo failure")
           curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
             -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
             -H "Content-Type: application/json" \
