@@ -13,7 +13,6 @@ env:
   ERROR_RATE_LIMIT: 0.0001         # 1% error tolerance
 
 jobs:
-
   # ==========================================
   # NEW JOB: Observability Provisioning
   # ==========================================
@@ -126,11 +125,218 @@ jobs:
             sudo mkdir -p /home/husaintrivedi/simulated-project
             echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /home/husaintrivedi/simulated-project/.env
           SSHEOF
+
+  # ==========================================
+  # NEW JOB: Deploy Demo App for APM Testing
+  # ==========================================
+  deploy_demo_app:
+    needs: provision_monitoring
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 35.200.203.148 >> ~/.ssh/known_hosts
+
+      - name: Write Demo App to Server
+        run: |
+          # ── app.js ─────────────────────────────────────────────
+          cat > /tmp/app.js << 'APPEOF'
+          const { NodeSDK } = require('@opentelemetry/sdk-node');
+          const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-grpc');
+          const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
+          const { Resource } = require('@opentelemetry/resources');
+          const { SemanticResourceAttributes } = require('@opentelemetry/semantic-conventions');
+
+          // Point at Alloy's OTLP receiver (which forwards to Tempo)
+          const exporter = new OTLPTraceExporter({
+            url: 'grpc://localhost:4317',
+          });
+
+          const sdk = new NodeSDK({
+            resource: new Resource({
+              [SemanticResourceAttributes.SERVICE_NAME]: 'demo-pipeline-app',
+              [SemanticResourceAttributes.SERVICE_VERSION]: process.env.APP_VERSION || '1.0.0',
+              'deployment.environment': 'ci-test',
+            }),
+            traceExporter: exporter,
+            instrumentations: [getNodeAutoInstrumentations()],
+          });
+
+          sdk.start();
+
+          const express = require('express');
+          const { trace, context, SpanStatusCode } = require('@opentelemetry/api');
+          const app = express();
+          const tracer = trace.getTracer('demo-app');
+
+          // ── Routes ───────────────────────────────────────────
+          app.get('/', (req, res) => {
+            const span = tracer.startSpan('handle-root');
+            context.with(trace.setSpan(context.active(), span), () => {
+              span.setAttribute('http.route', '/');
+              span.setAttribute('custom.demo', true);
+              setTimeout(() => {
+                span.setStatus({ code: SpanStatusCode.OK });
+                span.end();
+                res.json({ status: 'ok', service: 'demo-pipeline-app', timestamp: new Date().toISOString() });
+              }, Math.floor(Math.random() * 80) + 10); // Simulate 10-90ms work
+            });
+          });
+
+          app.get('/health', (req, res) => {
+            res.json({ healthy: true });
+          });
+
+          app.get('/slow', (req, res) => {
+            const span = tracer.startSpan('handle-slow-endpoint');
+            context.with(trace.setSpan(context.active(), span), () => {
+              span.setAttribute('http.route', '/slow');
+              span.setAttribute('intentionally.slow', true);
+              setTimeout(() => {
+                span.setStatus({ code: SpanStatusCode.OK });
+                span.end();
+                res.json({ message: 'slow response', delay_ms: 300 });
+              }, 300);
+            });
+          });
+
+          app.get('/error', (req, res) => {
+            const span = tracer.startSpan('handle-error-endpoint');
+            context.with(trace.setSpan(context.active(), span), () => {
+              span.setAttribute('http.route', '/error');
+              span.recordException(new Error('Intentional demo error for APM testing'));
+              span.setStatus({ code: SpanStatusCode.ERROR, message: 'Demo error triggered' });
+              span.end();
+              res.status(500).json({ error: 'Intentional demo error', trace_id: span.spanContext().traceId });
+            });
+          });
+
+          const PORT = 3000;
+          const server = app.listen(PORT, () => {
+            console.log(`Demo app running on port ${PORT}`);
+          });
+
+          // Graceful shutdown
+          process.on('SIGTERM', () => {
+            sdk.shutdown().finally(() => {
+              server.close(() => process.exit(0));
+            });
+          });
+          APPEOF
+
+          # ── package.json ────────────────────────────────────────
+          cat > /tmp/package.json << 'PKGEOF'
+          {
+            "name": "demo-pipeline-app",
+            "version": "1.0.0",
+            "main": "app.js",
+            "dependencies": {
+              "express": "^4.18.2",
+              "@opentelemetry/sdk-node": "^0.51.0",
+              "@opentelemetry/api": "^1.8.0",
+              "@opentelemetry/auto-instrumentations-node": "^0.46.0",
+              "@opentelemetry/exporter-trace-otlp-grpc": "^0.51.0",
+              "@opentelemetry/resources": "^1.24.0",
+              "@opentelemetry/semantic-conventions": "^1.24.0"
+            }
+          }
+          PKGEOF
+
+          scp /tmp/app.js /tmp/package.json husaintrivedi@35.200.203.148:/tmp/
+
+      - name: Install & Start Demo App on Server
+        run: |
+          ssh husaintrivedi@35.200.203.148 << 'SSHEOF'
+            echo "--- Setting up demo app ---"
+
+            # Ensure Node.js is available
+            if ! command -v node &> /dev/null; then
+              curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            fi
+
+            # Kill any existing demo app instance
+            pkill -f "node /home/husaintrivedi/demo-app/app.js" 2>/dev/null || true
+            sleep 1
+
+            # Set up app directory
+            sudo mkdir -p /home/husaintrivedi/demo-app
+            sudo cp /tmp/app.js /tmp/package.json /home/husaintrivedi/demo-app/
+            sudo chown -R husaintrivedi:husaintrivedi /home/husaintrivedi/demo-app
+
+            cd /home/husaintrivedi/demo-app
+            npm install --silent 2>&1 | tail -3
+
+            # Start app in background, log to file
+            APP_VERSION="${{ github.sha }}" nohup node app.js > /tmp/demo-app.log 2>&1 &
+            echo $! > /tmp/demo-app.pid
+            sleep 3
+
+            # Verify it started
+            if curl -sf http://localhost:3000/health > /dev/null; then
+              echo "✓ Demo app is up"
+            else
+              echo "✗ Demo app failed to start"
+              cat /tmp/demo-app.log
+              exit 1
+            fi
+          SSHEOF
+
+      - name: Generate APM Trace Data (Warm-up Requests)
+        run: |
+          ssh husaintrivedi@35.200.203.148 << 'SSHEOF'
+            echo "--- Generating trace data ---"
+
+            # Hit each route multiple times to produce varied trace spans in Tempo
+            for i in $(seq 1 10); do
+              curl -sf http://localhost:3000/ > /dev/null
+              sleep 0.3
+            done
+            echo "✓ Root endpoint: 10 requests"
+
+            for i in $(seq 1 5); do
+              curl -sf http://localhost:3000/slow > /dev/null
+              sleep 0.2
+            done
+            echo "✓ Slow endpoint: 5 requests (300ms spans visible in Tempo)"
+
+            for i in $(seq 1 5); do
+              curl -sf http://localhost:3000/error > /dev/null || true
+              sleep 0.2
+            done
+            echo "✓ Error endpoint: 5 requests (error spans with exceptions in Tempo)"
+
+            echo "--- All trace data generated. Check Grafana → Explore → Tempo ---"
+          SSHEOF
+
+      - name: Log Demo App Deployment to Wazuh
+        if: always()
+        run: |
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          STATUS=$(ssh husaintrivedi@35.200.203.148 "curl -sf http://localhost:3000/health > /dev/null && echo success || echo failure")
+          curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
+            -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"timestamp\": \"$TIMESTAMP\",
+              \"event_type\": \"DEMO_APP_DEPLOYMENT\",
+              \"repo\": \"${{ github.event.repository.name }}\",
+              \"status\": \"$STATUS\",
+              \"app_version\": \"${{ github.sha }}\",
+              \"service_name\": \"demo-pipeline-app\",
+              \"otel_endpoint\": \"grpc://localhost:4317\",
+              \"breach_details\": \"Demo Node.js app deployed for APM/Tempo trace testing\",
+              \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+            }"
   # ==========================================
   # JOB 1: STEP 4 - Deep Security (VAPT)
   # ==========================================
   security_vapt_job:
-    needs: provision_monitoring
+    # needs: provision_monitoring
+    needs: deploy_demo_app   # ← was: provision_monitoring
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -191,7 +397,8 @@ jobs:
   # JOB 2: STEP 5 - Benchmarking + Sentry
   # ==========================================
   benchmarking_job:
-    needs: provision_monitoring
+    # needs: provision_monitoring
+    needs: deploy_demo_app   # ← was: provision_monitoring
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
