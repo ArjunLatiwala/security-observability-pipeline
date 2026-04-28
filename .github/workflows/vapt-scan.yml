@@ -114,12 +114,14 @@ jobs:
               sudo apt-get update && sudo apt-get install -y alloy
             fi
             # =========================================================================================
+            # Ensure Node.js is available
             if ! command -v node &> /dev/null; then
-            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-            sudo apt-get install -y nodejs
+              curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+              sudo apt-get install -y nodejs
             fi
-             # Install OTel globally so it's resolvable from any Node process on this server
-            if ! node -e "require('@opentelemetry/auto-instrumentations-node/register')" 2>/dev/null; then
+            
+            # Install OTel globally
+            if ! node -e "require('@opentelemetry/auto-instrumentations-node')" 2>/dev/null; then
               echo "⚠️ Installing OTel auto-instrumentation globally..."
               sudo npm install -g \
                 @opentelemetry/auto-instrumentations-node \
@@ -130,15 +132,25 @@ jobs:
               echo "✅ OTel already installed globally"
             fi
             
-            # Now this works for every Node app on this server — no app code changes needed
-            OTEL_RULE="NODE_OPTIONS='--require @opentelemetry/auto-instrumentations-node/register'"
+            # Get the exact path npm uses for global modules — no guessing
+            GLOBAL_NODE_MODULES=$(npm root -g)
+            echo "Global node_modules path: $GLOBAL_NODE_MODULES"
+            
+            # Verify the module is actually there
+            if [ ! -d "$GLOBAL_NODE_MODULES/@opentelemetry/auto-instrumentations-node" ]; then
+              echo "❌ OTel module not found at $GLOBAL_NODE_MODULES — install failed"
+              exit 1
+            fi
+            
+            # Write to /etc/environment without quotes so sourcing works correctly
             if grep -q "NODE_OPTIONS" /etc/environment; then
               echo "✅ System-wide OTel rule already exists."
             else
               echo "⚠️ Injecting OTel auto-instrumentation into /etc/environment..."
-              echo 'NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register' | sudo tee -a /etc/environment
-              echo 'OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318' | sudo tee -a /etc/environment
-              echo 'OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf' | sudo tee -a /etc/environment
+              echo "NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register" | sudo tee -a /etc/environment
+              echo "NODE_PATH=${GLOBAL_NODE_MODULES}" | sudo tee -a /etc/environment
+              echo "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318" | sudo tee -a /etc/environment
+              echo "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf" | sudo tee -a /etc/environment
               echo "✅ All Node.js apps on this server now send APM to Alloy automatically"
             fi
             # =========================================================================================
