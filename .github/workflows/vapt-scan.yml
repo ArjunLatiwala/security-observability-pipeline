@@ -114,7 +114,8 @@ jobs:
               sudo apt-get update && sudo apt-get install -y alloy
             fi
             # =========================================================================================
-                  OTEL_RULE="NODE_OPTIONS='--require @opentelemetry/auto-instrumentations-node/register'"
+            OTEL_RULE="NODE_OPTIONS='--require @opentelemetry/auto-instrumentations-node/register'"
+            NODE_PATH="NODE_PATH='/home/husaintrivedi/demo-app/node_modules'"
             if grep -q "NODE_OPTIONS" /etc/environment; then
               echo "✅ System-wide OTel rule already exists."
             else
@@ -178,7 +179,7 @@ jobs:
             "dependencies": {
               "express": "^4.19.2",
               "@opentelemetry/api": "^1.9.0",
-              "@opentelemetry/auto-instrumentations-node": "^0.49.1",
+              "@opentelemetry/auto-instrumentations-node": "^0.50.0",
               "@opentelemetry/sdk-node": "^0.52.1"
             }
           }
@@ -209,6 +210,8 @@ jobs:
             cd /home/husaintrivedi/demo-app
             npm install --silent 2>&1 | tail -3
 
+            set -a; [ -f /etc/environment ] && . /etc/environment; set +a;
+            
             # Start app in background, log to file
             APP_VERSION="${{ github.sha }}" nohup node app.js > /tmp/demo-app.log 2>&1 &
             echo $! > /tmp/demo-app.pid
