@@ -283,9 +283,11 @@ jobs:
           cat > /tmp/app.py << 'APPEOF'
           import os
           import time
+          import requests
           from flask import Flask, jsonify
 
           app = Flask(__name__)
+          INVENTORY_URL = os.getenv('INVENTORY_URL', 'http://localhost:3001/inventory')
 
           @app.route('/')
           def index():
@@ -301,11 +303,14 @@ jobs:
 
           @app.route('/api/orders')
           def orders():
+              inventory = requests.get(INVENTORY_URL, timeout=2)
+              inventory.raise_for_status()
               return jsonify({
                   'orders': [
                       {'id': 101, 'status': 'created'},
                       {'id': 102, 'status': 'processing'}
-                  ]
+                  ],
+                  'inventory': inventory.json()
               })
 
           @app.route('/slow')
@@ -321,14 +326,36 @@ jobs:
               app.run(host='0.0.0.0', port=3000)
           APPEOF
 
+          cat > /tmp/inventory_app.py << 'INVENTORYEOF'
+          import os
+          from flask import Flask, jsonify
+
+          app = Flask(__name__)
+
+          @app.route('/health')
+          def health():
+              return jsonify({'status': 'healthy'})
+
+          @app.route('/inventory')
+          def inventory():
+              return jsonify({
+                  'service': os.getenv('OTEL_SERVICE_NAME', 'demo-inventory-service'),
+                  'items_available': 42
+              })
+
+          if __name__ == '__main__':
+              app.run(host='127.0.0.1', port=3001)
+          INVENTORYEOF
+
           cat > /tmp/requirements.txt << 'REQEOF'
           flask==3.0.3
+          requests==2.32.3
           setuptools<81
           opentelemetry-distro==0.47b0
           opentelemetry-exporter-otlp==1.26.0
           REQEOF
 
-          scp /tmp/app.py /tmp/requirements.txt ${{ env.SSH_USER }}@${{ env.TARGET_IP }}:/tmp/
+          scp /tmp/app.py /tmp/inventory_app.py /tmp/requirements.txt ${{ env.SSH_USER }}@${{ env.TARGET_IP }}:/tmp/
 
       - name: Install & Start Demo App on Server
         run: |
@@ -343,15 +370,19 @@ jobs:
 
             pkill -f "/home/${{ env.SSH_USER }}/demo-app/.venv/bin/python /home/${{ env.SSH_USER }}/demo-app/app.py" 2>/dev/null || true
             pkill -f "opentelemetry-instrument.*demo-app/app.py" 2>/dev/null || true
+            pkill -f "opentelemetry-instrument.*demo-app/inventory_app.py" 2>/dev/null || true
             pkill -f "node.*demo-app" 2>/dev/null || true
             pkill -f "app.js" 2>/dev/null || true
             if sudo lsof -ti :3000 >/dev/null 2>&1; then
               sudo kill $(sudo lsof -ti :3000) 2>/dev/null || true
             fi
+            if sudo lsof -ti :3001 >/dev/null 2>&1; then
+              sudo kill $(sudo lsof -ti :3001) 2>/dev/null || true
+            fi
             sleep 2
 
             sudo mkdir -p /home/${{ env.SSH_USER }}/demo-app
-            sudo cp /tmp/app.py /tmp/requirements.txt /home/${{ env.SSH_USER }}/demo-app/
+            sudo cp /tmp/app.py /tmp/inventory_app.py /tmp/requirements.txt /home/${{ env.SSH_USER }}/demo-app/
             sudo chown -R ${{ env.SSH_USER }}:${{ env.SSH_USER }} /home/${{ env.SSH_USER }}/demo-app
 
             cd /home/${{ env.SSH_USER }}/demo-app
@@ -363,15 +394,20 @@ jobs:
 
             set -a; [ -f /etc/environment ] && . /etc/environment; set +a;
 
-            OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python app.py > /tmp/demo-app.log 2>&1 &
+            OTEL_SERVICE_NAME=demo-inventory-service OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python inventory_app.py > /tmp/demo-inventory.log 2>&1 &
+            echo $! > /tmp/demo-inventory.pid
+            sleep 2
+
+            OTEL_SERVICE_NAME=${{ env.APP_SERVICE_NAME }} OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python app.py > /tmp/demo-app.log 2>&1 &
             echo $! > /tmp/demo-app.pid
             sleep 5
 
-            if curl -sf http://localhost:3000/health > /dev/null && curl -sf http://localhost:3000/api/orders > /dev/null; then
-              echo "✓ Python demo app is up"
+            if curl -sf http://localhost:3001/health > /dev/null && curl -sf http://localhost:3000/health > /dev/null && curl -sf http://localhost:3000/api/orders > /dev/null; then
+              echo "✓ Python demo app and inventory service are up"
             else
-              echo "✗ Python demo app failed to start or Python routes are unavailable"
-              cat /tmp/demo-app.log
+              echo "✗ Python demo services failed to start or routes are unavailable"
+              cat /tmp/demo-inventory.log || true
+              cat /tmp/demo-app.log || true
               exit 1
             fi
           SSHEOF
@@ -394,11 +430,11 @@ jobs:
             done
             echo "✓ Slow endpoint: 5 requests (300ms spans visible in Tempo)"
 
-            for i in $(seq 1 5); do
+            for i in $(seq 1 30); do
               curl -sf http://localhost:3000/api/orders > /dev/null
               sleep 0.2
             done
-            echo "✓ Orders endpoint: 5 requests"
+            echo "✓ Orders endpoint: 30 requests with demo-python-app → demo-inventory-service spans"
 
             for i in $(seq 1 5); do
               curl -sf http://localhost:3000/error > /dev/null || true
@@ -662,67 +698,67 @@ jobs:
               sys.exit(1)
 
           PYEOF
-      # - name: Send Google Chat Alert on Failure
-      #   if: failure()
-      #   run: |
-      #     RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-      #     TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-      #     INCIDENT_ID="INC-${{ github.run_number }}"
+      - name: Send Google Chat Alert on Failure
+        if: failure()
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+          INCIDENT_ID="INC-${{ github.run_number }}"
 
-      #     ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
-      #     ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
-      #     CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
+          ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
+          ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
+          CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
 
-      #     LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
-      #     ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
-      #     EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
+          LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
+          ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
+          EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
 
-      #     FAILURES=""
-      #     if (( ACTUAL_LAT > LAT_LIMIT )); then
-      #       FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
-      #     fi
-      #     if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
-      #       FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
-      #     fi
-      #     if [ "$CHECK_FAILS" -gt 0 ]; then
-      #       FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
-      #     fi
-      #     if [ -z "$FAILURES" ]; then
-      #       FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
-      #     fi
+          FAILURES=""
+          if (( ACTUAL_LAT > LAT_LIMIT )); then
+            FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
+          fi
+          if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
+            FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
+          fi
+          if [ "$CHECK_FAILS" -gt 0 ]; then
+            FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
+          fi
+          if [ -z "$FAILURES" ]; then
+            FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
+          fi
 
-      #     MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     Incident ID : %s
-      #     Time        : %s
-      #     Repository  : %s
-      #     Product ID  : %s
-      #     Target      : %s
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *FAILURE ANALYSIS*
+          MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          Incident ID : %s
+          Time        : %s
+          Repository  : %s
+          Product ID  : %s
+          Target      : %s
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *FAILURE ANALYSIS*
 
-      #     %s
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *ACTIONS*
+          %s
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *ACTIONS*
 
-      #     Investigate : <%s|View GitHub Actions Run>
-      #     Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
-      #           "$INCIDENT_ID" \
-      #           "$TIMESTAMP" \
-      #           "${{ github.event.repository.name }}" \
-      #           "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
-      #           "${{ env.TARGET_URL }}" \
-      #           "$FAILURES" \
-      #           "$RUN_URL")
+          Investigate : <%s|View GitHub Actions Run>
+          Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
+                "$INCIDENT_ID" \
+                "$TIMESTAMP" \
+                "${{ github.event.repository.name }}" \
+                "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+                "${{ env.TARGET_URL }}" \
+                "$FAILURES" \
+                "$RUN_URL")
 
-      #         jq -n --arg text "$MESSAGE" '{"text": $text}' | \
-      #           curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
-      #             -H "Content-Type: application/json" \
-      #             -d @-
+              jq -n --arg text "$MESSAGE" '{"text": $text}' | \
+                curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
+                  -H "Content-Type: application/json" \
+                  -d @-
 
-      #         exit 1
+              exit 1
 
       - name: Report Failure to Sentry
         if: failure()
