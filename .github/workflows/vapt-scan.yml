@@ -55,9 +55,6 @@ env:
   SENTRY_ORG_SLUG: 'creole-studios-xj'
   SENTRY_PROJECT_SLUG: 'security-observability-pipeline'
 
-  # --- GRAFANA / K6 CONFIGURATION ---
-  K6_PROJECT_ID: '7324608'
-
   # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
   LATENCY_THRESHOLD: 10          # Fail: Real latency > 10ms (Set to 2000 for PROD)
   EXPECTED_STATUS: 201           # Fail: Site is 200 (Set to 200 for PROD)
@@ -591,7 +588,7 @@ jobs:
           ERROR_LIMIT: ${{ env.ERROR_RATE_LIMIT }}
           EXPECTED_ST: ${{ env.EXPECTED_STATUS }}
           K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
-          K6_CLOUD_PROJECT_ID: ${{ env.K6_PROJECT_ID }}
+          K6_CLOUD_PROJECT_ID: ${{ secrets.K6_PROJECT_ID }}
           K6_CLOUD_NAME: "${{ github.event.repository.name }}"
 
       - name: Log Performance Audit to Wazuh Indexer
