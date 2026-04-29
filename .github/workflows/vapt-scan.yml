@@ -273,6 +273,7 @@ jobs:
 
           cat > /tmp/requirements.txt << 'REQEOF'
           flask==3.0.3
+          setuptools<81
           opentelemetry-distro==0.47b0
           opentelemetry-exporter-otlp==1.26.0
           REQEOF
