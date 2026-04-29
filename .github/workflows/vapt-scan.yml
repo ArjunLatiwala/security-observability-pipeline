@@ -190,6 +190,7 @@ jobs:
                   opentelemetry-exporter-otlp
                 python3 -m opentelemetry.instrumentation.bootstrap -a install
                 echo "OTEL_METRICS_EXPORTER=none" | sudo tee -a /etc/environment
+                echo "OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda" | sudo tee -a /etc/environment
                 echo "✅ Python OTel packages installed. Start Python apps with: opentelemetry-instrument python <app-entrypoint>"
                 ;;
               none)
@@ -312,7 +313,7 @@ jobs:
 
             set -a; [ -f /etc/environment ] && . /etc/environment; set +a;
 
-            APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python app.py > /tmp/demo-app.log 2>&1 &
+            OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python app.py > /tmp/demo-app.log 2>&1 &
             echo $! > /tmp/demo-app.pid
             sleep 5
 
