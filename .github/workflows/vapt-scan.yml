@@ -310,6 +310,7 @@ jobs:
             .venv/bin/python -m pip install --upgrade pip
             .venv/bin/python -m pip install -r requirements.txt
             .venv/bin/opentelemetry-bootstrap -a install
+            .venv/bin/python -m pip uninstall -y opentelemetry-instrumentation-aws-lambda
 
             set -a; [ -f /etc/environment ] && . /etc/environment; set +a;
 
