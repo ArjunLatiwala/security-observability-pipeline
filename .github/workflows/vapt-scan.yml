@@ -1,3 +1,32 @@
+# Developer APM Runtime Guide
+#
+# Choose APP_RUNTIME based on the application deployed on TARGET_IP.
+# Choose APP_SERVICE_NAME as the stable name you want to see in Grafana Tempo/APM as service.name.
+# Examples: checkout-api, inventory-service, demo-python-app, demo-pipeline-app.
+#
+# ┌────────┬─────────────────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────┐
+# │ Value  │                  Use when the deployed app is                   │                           What workflow does                           │
+# ├────────┼─────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+# │ node   │ Node.js / Express / Next.js / NestJS / etc.                     │ Installs Node OpenTelemetry auto-instrumentation and sets NODE_OPTIONS │
+# ├────────┼─────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+# │ python │ Python / Flask / FastAPI / Django / etc.                        │ Installs Python OpenTelemetry packages                                 │
+# ├────────┼─────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
+# │ none   │ App is not Node/Python, or app is already manually instrumented │ Keeps Alloy only; no automatic app instrumentation                     │
+# └────────┴─────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┘
+#
+# Runtime startup expectations:
+# - node: restart the Node app after this workflow so it inherits /etc/environment.
+#   The workflow sets NODE_OPTIONS, NODE_PATH, OTEL_SERVICE_NAME, and OTLP exporter env vars.
+# - python: start the app with opentelemetry-instrument, for example:
+#   opentelemetry-instrument python app.py
+#   If using a virtualenv, prefer: .venv/bin/opentelemetry-instrument .venv/bin/python app.py
+# - none: configure instrumentation inside the app manually, or point any supported OpenTelemetry SDK to http://localhost:4318.
+#
+# Grafana check:
+# - Open Grafana Explore or Application Observability.
+# - Select the Tempo traces data source.
+# - Search for service.name matching APP_SERVICE_NAME.
+
 name: Step 4 & 5 - Final Scalable Enterprise Architecture
 
 on:
@@ -10,10 +39,12 @@ env:
   SSH_USER: 'husaintrivedi'
 
   # --- APPLICATION RUNTIME CONFIGURATION ---
-  # APP_RUNTIME controls which OpenTelemetry auto-instrumentation setup is installed.
-  # Supported values: node, python, none
-  # APP_SERVICE_NAME is the name shown in Grafana/Tempo APM as service.name.
+  # APP_RUNTIME controls which OpenTelemetry setup this workflow prepares on the server.
+  # Set to node for Node.js apps, python for Python apps, or none for unsupported/manual instrumentation.
   APP_RUNTIME: 'python'
+
+  # APP_SERVICE_NAME is chosen by the developer and appears in Grafana/Tempo APM as service.name.
+  # Use the real app or microservice name, for example checkout-api, inventory-service, or demo-python-app.
   APP_SERVICE_NAME: 'demo-python-app'
 
   # --- WAZUH SERVER CONFIGURATION ---
@@ -98,13 +129,26 @@ jobs:
             }
           }
 
-          // 3. Traces / APM (Tempo)
+          // 3. Traces / APM (Tempo) + Service Graph Metrics
           otelcol.receiver.otlp "default" {
             http { endpoint = "0.0.0.0:4318" }
             grpc { endpoint = "0.0.0.0:4317" }
             output {
-              traces = [otelcol.exporter.otlp.grafana_cloud_traces.input]
+              traces = [
+                otelcol.connector.servicegraph.default.input,
+                otelcol.exporter.otlp.grafana_cloud_traces.input,
+              ]
             }
+          }
+
+          otelcol.connector.servicegraph "default" {
+            output {
+              metrics = [otelcol.exporter.prometheus.service_graph.input]
+            }
+          }
+
+          otelcol.exporter.prometheus "service_graph" {
+            forward_to = [prometheus.remote_write.grafana_cloud.receiver]
           }
 
           otelcol.auth.basic "tempo" {
@@ -177,6 +221,7 @@ jobs:
                 echo "NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register" | sudo tee -a /etc/environment
                 echo "NODE_PATH=${GLOBAL_NODE_MODULES}" | sudo tee -a /etc/environment
                 echo "✅ Node.js apps that inherit /etc/environment will send APM to Alloy after restart"
+                echo "Developer action: restart your Node.js app after this workflow so it picks up NODE_OPTIONS and OTEL_SERVICE_NAME=${{ env.APP_SERVICE_NAME }}."
                 ;;
               python)
                 if ! command -v python3 &> /dev/null; then
@@ -192,9 +237,13 @@ jobs:
                 echo "OTEL_METRICS_EXPORTER=none" | sudo tee -a /etc/environment
                 echo "OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda" | sudo tee -a /etc/environment
                 echo "✅ Python OTel packages installed. Start Python apps with: opentelemetry-instrument python <app-entrypoint>"
+                echo "Developer action: start your Python app with opentelemetry-instrument so it emits service.name=${{ env.APP_SERVICE_NAME }} to http://localhost:4318."
+                echo "Virtualenv example: .venv/bin/opentelemetry-instrument .venv/bin/python app.py"
                 ;;
               none)
                 echo "✅ Runtime instrumentation disabled. Alloy will still collect host metrics/logs and receive OTLP from instrumented apps."
+                echo "Developer action: instrument the app manually with an OpenTelemetry SDK and export OTLP/HTTP traces to http://localhost:4318."
+                echo "Use service.name=${{ env.APP_SERVICE_NAME }} in the app SDK/resource configuration."
                 ;;
               *)
                 echo "❌ Unsupported APP_RUNTIME='${{ env.APP_RUNTIME }}'. Use node, python, or none."
@@ -613,67 +662,67 @@ jobs:
               sys.exit(1)
 
           PYEOF
-      # - name: Send Google Chat Alert on Failure
-      #   if: failure()
-      #   run: |
-      #     RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-      #     TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-      #     INCIDENT_ID="INC-${{ github.run_number }}"
+      - name: Send Google Chat Alert on Failure
+        if: failure()
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+          INCIDENT_ID="INC-${{ github.run_number }}"
 
-      #     ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
-      #     ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
-      #     CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
+          ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
+          ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
+          CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
 
-      #     LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
-      #     ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
-      #     EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
+          LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
+          ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
+          EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
 
-      #     FAILURES=""
-      #     if (( ACTUAL_LAT > LAT_LIMIT )); then
-      #       FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
-      #     fi
-      #     if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
-      #       FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
-      #     fi
-      #     if [ "$CHECK_FAILS" -gt 0 ]; then
-      #       FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
-      #     fi
-      #     if [ -z "$FAILURES" ]; then
-      #       FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
-      #     fi
+          FAILURES=""
+          if (( ACTUAL_LAT > LAT_LIMIT )); then
+            FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
+          fi
+          if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
+            FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
+          fi
+          if [ "$CHECK_FAILS" -gt 0 ]; then
+            FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
+          fi
+          if [ -z "$FAILURES" ]; then
+            FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
+          fi
 
-      #     MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     Incident ID : %s
-      #     Time        : %s
-      #     Repository  : %s
-      #     Product ID  : %s
-      #     Target      : %s
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *FAILURE ANALYSIS*
+          MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          Incident ID : %s
+          Time        : %s
+          Repository  : %s
+          Product ID  : %s
+          Target      : %s
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *FAILURE ANALYSIS*
 
-      #     %s
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *ACTIONS*
+          %s
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *ACTIONS*
 
-      #     Investigate : <%s|View GitHub Actions Run>
-      #     Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
-      #           "$INCIDENT_ID" \
-      #           "$TIMESTAMP" \
-      #           "${{ github.event.repository.name }}" \
-      #           "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
-      #           "${{ env.TARGET_URL }}" \
-      #           "$FAILURES" \
-      #           "$RUN_URL")
+          Investigate : <%s|View GitHub Actions Run>
+          Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
+                "$INCIDENT_ID" \
+                "$TIMESTAMP" \
+                "${{ github.event.repository.name }}" \
+                "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+                "${{ env.TARGET_URL }}" \
+                "$FAILURES" \
+                "$RUN_URL")
 
-      #         jq -n --arg text "$MESSAGE" '{"text": $text}' | \
-      #           curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
-      #             -H "Content-Type: application/json" \
-      #             -d @-
+              jq -n --arg text "$MESSAGE" '{"text": $text}' | \
+                curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
+                  -H "Content-Type: application/json" \
+                  -d @-
 
-      #         exit 1
+              exit 1
 
       - name: Report Failure to Sentry
         if: failure()
