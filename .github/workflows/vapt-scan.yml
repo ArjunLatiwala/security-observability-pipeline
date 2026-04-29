@@ -43,9 +43,8 @@ env:
   # Set to node for Node.js apps, python for Python apps, or none for unsupported/manual instrumentation.
   APP_RUNTIME: 'python'
 
-  # APP_SERVICE_NAME is chosen by the developer and appears in Grafana/Tempo APM as service.name.
-  # Use the real app or microservice name, for example checkout-api, inventory-service, or demo-python-app.
-  APP_SERVICE_NAME: 'demo-python-app'
+  # APP_SERVICE_NAME appears in Grafana Tempo/APM as service.name.
+  APP_SERVICE_NAME: ${{ github.event.repository.name }}
 
   # --- WAZUH SERVER CONFIGURATION ---
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
@@ -94,8 +93,27 @@ jobs:
           // 1. Metrics (Prometheus)
           prometheus.exporter.unix "node" {}
 
+          discovery.relabel "node" {
+            targets = prometheus.exporter.unix.node.targets
+
+            rule {
+              target_label = "repo"
+              replacement  = "${{ github.event.repository.name }}"
+            }
+
+            rule {
+              target_label = "github_repository"
+              replacement  = "${{ github.repository }}"
+            }
+
+            rule {
+              target_label = "service_name"
+              replacement  = "${{ env.APP_SERVICE_NAME }}"
+            }
+          }
+
           prometheus.scrape "local" {
-            targets         = prometheus.exporter.unix.node.targets
+            targets         = discovery.relabel.node.output
             forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
             scrape_interval = "15s"
           }
@@ -113,7 +131,13 @@ jobs:
           // 2. Logs (Loki)
           loki.source.journal "read" {
             forward_to = [loki.write.grafana_cloud.receiver]
-            labels     = { job = "systemd-journal", host = "gcp-server" }
+            labels = {
+              job = "systemd-journal",
+              host = "gcp-server",
+              repo = "${{ github.event.repository.name }}",
+              github_repository = "${{ github.repository }}",
+              service_name = "${{ env.APP_SERVICE_NAME }}",
+            }
           }
 
           loki.write "grafana_cloud" {
@@ -182,6 +206,7 @@ jobs:
             echo "✅ Cleared stale runtime OTel env vars from /etc/environment"
 
             echo "OTEL_SERVICE_NAME=${{ env.APP_SERVICE_NAME }}" | sudo tee -a /etc/environment
+            echo "OTEL_RESOURCE_ATTRIBUTES=service.namespace=${{ github.repository_owner }},deployment.environment=github-actions,github.repository=${{ github.repository }},github.repository.name=${{ github.event.repository.name }}" | sudo tee -a /etc/environment
             echo "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318" | sudo tee -a /etc/environment
             echo "OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf" | sudo tee -a /etc/environment
             echo "OTEL_TRACES_EXPORTER=otlp" | sudo tee -a /etc/environment
@@ -391,11 +416,11 @@ jobs:
 
             set -a; [ -f /etc/environment ] && . /etc/environment; set +a;
 
-            OTEL_SERVICE_NAME=demo-inventory-service OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python inventory_app.py > /tmp/demo-inventory.log 2>&1 &
+            OTEL_SERVICE_NAME=${{ env.APP_SERVICE_NAME }}-inventory OTEL_RESOURCE_ATTRIBUTES="service.namespace=${{ github.repository_owner }},deployment.environment=github-actions,github.repository=${{ github.repository }},github.repository.name=${{ github.event.repository.name }}" OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python inventory_app.py > /tmp/demo-inventory.log 2>&1 &
             echo $! > /tmp/demo-inventory.pid
             sleep 2
 
-            OTEL_SERVICE_NAME=${{ env.APP_SERVICE_NAME }} OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python app.py > /tmp/demo-app.log 2>&1 &
+            OTEL_SERVICE_NAME=${{ env.APP_SERVICE_NAME }} OTEL_RESOURCE_ATTRIBUTES="service.namespace=${{ github.repository_owner }},deployment.environment=github-actions,github.repository=${{ github.repository }},github.repository.name=${{ github.event.repository.name }}" OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python app.py > /tmp/demo-app.log 2>&1 &
             echo $! > /tmp/demo-app.pid
             sleep 5
 
