@@ -292,7 +292,12 @@ jobs:
 
             pkill -f "/home/${{ env.SSH_USER }}/demo-app/.venv/bin/python /home/${{ env.SSH_USER }}/demo-app/app.py" 2>/dev/null || true
             pkill -f "opentelemetry-instrument.*demo-app/app.py" 2>/dev/null || true
-            sleep 1
+            pkill -f "node.*demo-app" 2>/dev/null || true
+            pkill -f "app.js" 2>/dev/null || true
+            if sudo lsof -ti :3000 >/dev/null 2>&1; then
+              sudo kill $(sudo lsof -ti :3000) 2>/dev/null || true
+            fi
+            sleep 2
 
             sudo mkdir -p /home/${{ env.SSH_USER }}/demo-app
             sudo cp /tmp/app.py /tmp/requirements.txt /home/${{ env.SSH_USER }}/demo-app/
@@ -310,10 +315,10 @@ jobs:
             echo $! > /tmp/demo-app.pid
             sleep 5
 
-            if curl -sf http://localhost:3000/health > /dev/null; then
+            if curl -sf http://localhost:3000/health > /dev/null && curl -sf http://localhost:3000/api/orders > /dev/null; then
               echo "✓ Python demo app is up"
             else
-              echo "✗ Python demo app failed to start"
+              echo "✗ Python demo app failed to start or Python routes are unavailable"
               cat /tmp/demo-app.log
               exit 1
             fi
