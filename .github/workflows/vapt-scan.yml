@@ -75,7 +75,7 @@ env:
 
 jobs:
   # ==========================================
-  # NEW JOB: Observability Provisioning
+  # JOB: Prepare Observability Before Tests
   # ==========================================
   provision_monitoring:
     runs-on: ubuntu-latest
@@ -83,12 +83,42 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Show Selected Runtime Config
+        run: |
+          echo "APP_RUNTIME=${{ env.APP_RUNTIME }}"
+          echo "APP_SERVICE_NAME=${{ env.APP_SERVICE_NAME }}"
+          echo "APP_WORKING_DIR=${{ env.APP_WORKING_DIR }}"
+          echo "APP_START_COMMAND=${{ env.APP_START_COMMAND }}"
+          echo "APP_PORT=${{ env.APP_PORT }}"
+          echo "APP_LOG_FILE=${{ env.APP_LOG_FILE }}"
+          echo "APP_RESTART_COMMAND=${{ env.APP_RESTART_COMMAND }}"
+          echo "TARGET_URL=${{ env.TARGET_URL }}"
+          echo "TARGET_IP=${{ env.TARGET_IP }}"
+          echo "SSH_USER=${{ env.SSH_USER }}"
+
+      - name: Send Google Chat Pipeline Started Alert
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+          MESSAGE=$(printf '*[STARTED] PIPELINE EXECUTION STARTED*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTime       : %s\nRepository : %s\nBranch     : %s\nRun Number : %s\nTarget     : %s\nService    : %s\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nView Run   : <%s|Open GitHub Actions Run>' \
+            "$TIMESTAMP" \
+            "${{ github.event.repository.name }}" \
+            "${{ github.ref_name }}" \
+            "${{ github.run_number }}" \
+            "${{ env.TARGET_URL }}" \
+            "${{ env.APP_SERVICE_NAME }}" \
+            "$RUN_URL")
+          jq -n --arg text "$MESSAGE" '{"text": $text}' | \
+            curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
+              -H "Content-Type: application/json" \
+              -d @-
+
       - name: Setup SSH Key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H 35.200.203.148 >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ env.TARGET_IP }} >> ~/.ssh/known_hosts
 
       - name: Configure Grafana Alloy Collector
         env:
@@ -469,7 +499,9 @@ jobs:
           sudo apt-get update && sudo apt-get install -y k6
 
       - name: Run Apache Bench Stress Test
-        run: ab -n 500 -c 10 ${{ env.TARGET_URL }}/ | tee stress-results.txt
+        run: |
+          ab -n 500 -c 10 ${{ env.TARGET_URL }}/ > stress-results.txt
+          grep -E "Complete requests|Failed requests|Requests per second|Time per request|Transfer rate" stress-results.txt || true
 
       - name: Run k6 Load Test
         id: k6_run
@@ -604,67 +636,67 @@ jobs:
               sys.exit(1)
 
           PYEOF
-      # - name: Send Google Chat Alert on Failure
-      #   if: failure()
-      #   run: |
-      #     RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-      #     TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-      #     INCIDENT_ID="INC-${{ github.run_number }}"
+      - name: Send Google Chat Alert on Failure
+        if: failure()
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+          INCIDENT_ID="INC-${{ github.run_number }}"
 
-      #     ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
-      #     ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
-      #     CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
+          ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
+          ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
+          CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
 
-      #     LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
-      #     ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
-      #     EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
+          LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
+          ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
+          EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
 
-      #     FAILURES=""
-      #     if (( ACTUAL_LAT > LAT_LIMIT )); then
-      #       FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
-      #     fi
-      #     if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
-      #       FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
-      #     fi
-      #     if [ "$CHECK_FAILS" -gt 0 ]; then
-      #       FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
-      #     fi
-      #     if [ -z "$FAILURES" ]; then
-      #       FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
-      #     fi
+          FAILURES=""
+          if (( ACTUAL_LAT > LAT_LIMIT )); then
+            FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
+          fi
+          if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
+            FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
+          fi
+          if [ "$CHECK_FAILS" -gt 0 ]; then
+            FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
+          fi
+          if [ -z "$FAILURES" ]; then
+            FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
+          fi
 
-      #     MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     Incident ID : %s
-      #     Time        : %s
-      #     Repository  : %s
-      #     Product ID  : %s
-      #     Target      : %s
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *FAILURE ANALYSIS*
+          MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nIncident ID : %s\nTime        : %s\nRepository  : %s\nProduct ID  : %s\nTarget      : %s\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*FAILURE ANALYSIS*\n\n%s\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*ACTIONS*\n\nInvestigate : <%s|View GitHub Actions Run>\nAudit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
+            "$INCIDENT_ID" \
+            "$TIMESTAMP" \
+            "${{ github.event.repository.name }}" \
+            "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            "${{ env.TARGET_URL }}" \
+            "$FAILURES" \
+            "$RUN_URL")
 
-      #     %s
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *ACTIONS*
+          jq -n --arg text "$MESSAGE" '{"text": $text}' | \
+            curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
+              -H "Content-Type: application/json" \
+              -d @-
 
-      #     Investigate : <%s|View GitHub Actions Run>
-      #     Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
-      #           "$INCIDENT_ID" \
-      #           "$TIMESTAMP" \
-      #           "${{ github.event.repository.name }}" \
-      #           "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
-      #           "${{ env.TARGET_URL }}" \
-      #           "$FAILURES" \
-      #           "$RUN_URL")
+          exit 1
 
-      #         jq -n --arg text "$MESSAGE" '{"text": $text}' | \
-      #           curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
-      #             -H "Content-Type: application/json" \
-      #             -d @-
-
-      #         exit 1
+      - name: Send Google Chat Pipeline Success Alert
+        if: success()
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+          MESSAGE=$(printf '*[SUCCESS] PIPELINE COMPLETED SUCCESSFULLY*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTime       : %s\nRepository : %s\nRun Number : %s\nTarget     : %s\nService    : %s\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*RESULT*\nSecurity scan and benchmarking completed successfully.\n\nView Run   : <%s|Open GitHub Actions Run>' \
+            "$TIMESTAMP" \
+            "${{ github.event.repository.name }}" \
+            "${{ github.run_number }}" \
+            "${{ env.TARGET_URL }}" \
+            "${{ env.APP_SERVICE_NAME }}" \
+            "$RUN_URL")
+          jq -n --arg text "$MESSAGE" '{"text": $text}' | \
+            curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
+              -H "Content-Type: application/json" \
+              -d @-
 
       - name: Upload Benchmarking Logs
         if: always()
