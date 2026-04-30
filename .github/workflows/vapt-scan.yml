@@ -100,7 +100,7 @@ jobs:
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-          MESSAGE=$(printf '*[STARTED] PIPELINE EXECUTION STARTED*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTime       : %s\nRepository : %s\nBranch     : %s\nRun Number : %s\nTarget     : %s\nService    : %s\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nView Run   : <%s|Open GitHub Actions Run>' \
+          MESSAGE=$(printf '*[STARTED] PIPELINE EXECUTION STARTED*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTime       : %s\nRepository : %s\nBranch     : %s\nRun Number : %s\nTarget     : %s\nAPM Service Name    : %s\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nView Run   : <%s|Open GitHub Actions Run>' \
             "$TIMESTAMP" \
             "${{ github.event.repository.name }}" \
             "${{ github.ref_name }}" \
