@@ -790,6 +790,42 @@ jobs:
           else:
               vapt_summary = "VAPT Status : unavailable\nDetails     : vapt-report.json was not available. Check VAPT job logs.\nFindings    : unavailable"
 
+          if benchmark:
+              actual_lat = benchmark.get('latency_observed_ms', 0)
+              latency_limit = benchmark.get('latency_threshold_ms', 'unknown')
+              actual_err = benchmark.get('error_rate_observed', 0)
+              error_limit = benchmark.get('error_rate_limit', 'unknown')
+              check_fails = benchmark.get('status_check_fails', 0)
+              expected_status = benchmark.get('expected_status_code', 'unknown')
+              benchmark_failures = []
+              benchmark_passes = []
+
+              if isinstance(actual_lat, (int, float)) and isinstance(latency_limit, (int, float)) and actual_lat > latency_limit:
+                  benchmark_failures.append(f"• Latency breach\n  Observed : {actual_lat}ms\n  Limit    : {latency_limit}ms\n  Impact   : Response time exceeded the configured performance gate.")
+              else:
+                  benchmark_passes.append(f"• Latency: {actual_lat}ms within {latency_limit}ms limit")
+
+              if isinstance(actual_err, (int, float)) and isinstance(error_limit, (int, float)) and actual_err > error_limit:
+                  benchmark_failures.append(f"• Error rate breach\n  Observed : {actual_err}\n  Limit    : {error_limit}\n  Impact   : Failed HTTP requests exceeded the reliability gate.")
+              else:
+                  benchmark_passes.append(f"• Error rate: {actual_err} within {error_limit} limit")
+
+              if check_fails > 0:
+                  benchmark_failures.append(f"• Status code mismatch\n  Failures : {check_fails} requests\n  Expected : {expected_status}\n  Impact   : The endpoint returned a different status than the benchmark expected.")
+              else:
+                  benchmark_passes.append(f"• Status code: all requests matched expected {expected_status}")
+
+              benchmark_summary = (
+                  f"Result      : {benchmark.get('status', benchmark_result)}\n"
+                  f"Thresholds  : p95 latency < {latency_limit}ms, error rate < {error_limit}, status code = {expected_status}"
+              )
+              if benchmark_failures:
+                  benchmark_summary += "\n\nFailures:\n" + "\n\n".join(benchmark_failures)
+              if benchmark_passes:
+                  benchmark_summary += "\n\nPassed checks:\n" + "\n".join(benchmark_passes)
+          else:
+              benchmark_summary = "Result      : unavailable\nDetails     : benchmark-report.json was not available. Check benchmark job logs."
+
           if all_success:
               print(f"""*[SUCCESS] PIPELINE COMPLETED SUCCESSFULLY*
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -802,45 +838,31 @@ jobs:
           *RESULT*
           Provisioning, security scan, and benchmarking completed successfully.
 
-          Job Statuses:
+          *JOB STATUSES*
             • Provisioning : {provision_result}
-            • VAPT        : {vapt_result}
-            • Benchmark   : {benchmark_result}
+            • VAPT         : {vapt_result}
+            • Benchmark    : {benchmark_result}
 
           *SECURITY SUMMARY*
           {vapt_summary}
+
+          *BENCHMARK SUMMARY*
+          {benchmark_summary}
 
           View Run   : <{os.environ['RUN_URL']}|Open GitHub Actions Run>""")
           else:
               failures = []
               if provision_result != "success":
                   if provision:
-                      failures.append(f"  • Provisioning: {provision_result} — runtime={provision.get('app_runtime', 'unknown')}, service={provision.get('app_service_name', 'unknown')}")
+                      failures.append(f"• Provisioning: {provision_result}\n  Runtime : {provision.get('app_runtime', 'unknown')}\n  Service : {provision.get('app_service_name', 'unknown')}\n  Details : Monitoring setup did not complete successfully; check provisioning logs.")
                   else:
-                      failures.append(f"  • Provisioning: {provision_result} — report missing; check provisioning logs.")
-
+                      failures.append(f"• Provisioning: {provision_result}\n  Details : provision-report.json was not available. Check provisioning logs.")
               if vapt_result != "success":
-                  if vapt:
-                      failures.append(
-                          f"  • VAPT: {vapt_result} — {vapt.get('breach_details', 'Security scan failed.')} "
-                          f"Counts: High={vapt.get('alerts_high', 0)}, Medium={vapt.get('alerts_medium', 0)}, Low={vapt.get('alerts_low', 0)}, Info={vapt.get('alerts_info', 0)}"
-                      )
-                  else:
-                      failures.append(f"  • VAPT: {vapt_result} — report missing; scan may have failed before analysis.")
-
+                  failures.append(f"• VAPT: {vapt_result}\n  Details : Review the security summary above and the VAPT job logs.")
               if benchmark_result != "success":
-                  if benchmark:
-                      failures.append(f"  • Benchmark: {benchmark_result} — {benchmark.get('breach_details', 'Benchmark failed.')}")
-                      failures.append(
-                          f"    Metrics: latency={benchmark.get('latency_observed_ms', 0)}ms/{benchmark.get('latency_threshold_ms', os.environ.get('LATENCY_THRESHOLD', 'unknown'))}ms, "
-                          f"error_rate={benchmark.get('error_rate_observed', 0)}/{benchmark.get('error_rate_limit', 'unknown')}, "
-                          f"status_failures={benchmark.get('status_check_fails', 0)}, expected_status={benchmark.get('expected_status_code', 'unknown')}"
-                      )
-                  else:
-                      failures.append(f"  • Benchmark: {benchmark_result} — report missing; k6 or audit logging may have failed early.")
-
+                  failures.append(f"• Benchmark: {benchmark_result}\n  Details : Review the benchmark summary below.")
               if not failures:
-                  failures.append("  • Pipeline failed. No detailed report artifacts were available; check runner logs.")
+                  failures.append("• Pipeline failed. No detailed report artifacts were available; check runner logs.")
 
               print(f"""*[CRITICAL] PIPELINE FAILURE DETECTED*
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -853,14 +875,16 @@ jobs:
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
           *JOB STATUSES*
             • Provisioning : {provision_result}
-            • VAPT        : {vapt_result}
-            • Benchmark   : {benchmark_result}
+            • VAPT         : {vapt_result}
+            • Benchmark    : {benchmark_result}
 
           *SECURITY SUMMARY*
           {vapt_summary}
 
-          *FAILURE ANALYSIS*
+          *BENCHMARK SUMMARY*
+          {benchmark_summary}
 
+          *FAILED STAGES*
           {chr(10).join(failures)}
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
           *ACTIONS*
@@ -868,7 +892,7 @@ jobs:
           Investigate : <{os.environ['RUN_URL']}|View GitHub Actions Run>
           Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback""")
+          *NEXT STEPS:* Review benchmark logs  >  Confirm threshold config  >  Fix app or update expected gate""")
           PYEOF
 
           MESSAGE=$(cat final-message.txt)
