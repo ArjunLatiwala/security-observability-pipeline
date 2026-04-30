@@ -780,6 +780,16 @@ jobs:
           all_success = provision_result == vapt_result == benchmark_result == "success"
           timestamp = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
 
+          if vapt:
+              vapt_summary = (
+                  f"VAPT Status : {vapt.get('status', 'unknown')}\n"
+                  f"Details     : {vapt.get('breach_details', 'No VAPT details available.')}\n"
+                  f"Findings    : High={vapt.get('alerts_high', 0)}, Medium={vapt.get('alerts_medium', 0)}, "
+                  f"Low={vapt.get('alerts_low', 0)}, Info={vapt.get('alerts_info', 0)}, Total={vapt.get('alerts_total', 0)}"
+              )
+          else:
+              vapt_summary = "VAPT Status : unavailable\nDetails     : vapt-report.json was not available. Check VAPT job logs.\nFindings    : unavailable"
+
           if all_success:
               print(f"""*[SUCCESS] PIPELINE COMPLETED SUCCESSFULLY*
           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -796,6 +806,9 @@ jobs:
             • Provisioning : {provision_result}
             • VAPT        : {vapt_result}
             • Benchmark   : {benchmark_result}
+
+          *SECURITY SUMMARY*
+          {vapt_summary}
 
           View Run   : <{os.environ['RUN_URL']}|Open GitHub Actions Run>""")
           else:
@@ -842,6 +855,9 @@ jobs:
             • Provisioning : {provision_result}
             • VAPT        : {vapt_result}
             • Benchmark   : {benchmark_result}
+
+          *SECURITY SUMMARY*
+          {vapt_summary}
 
           *FAILURE ANALYSIS*
 
