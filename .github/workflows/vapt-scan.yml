@@ -53,10 +53,10 @@ env:
   # Python example: APP_START_COMMAND='.venv/bin/python app.py'
   # Node example: APP_START_COMMAND='node server.js'
   # The workflow adds OTEL env vars automatically and prefixes Python with opentelemetry-instrument.
-  APP_WORKING_DIR: '/home/husaintrivedi/apm-test-app'                                                                                                                                         
-  APP_START_COMMAND: '.venv/bin/python app.py'                                                                                                                                                
-  APP_PORT: '3000'                                                                                                                                                                            
-  APP_LOG_FILE: '/tmp/apm-test-app.log' 
+  APP_WORKING_DIR: '/home/husaintrivedi/apm-test-app'
+  APP_START_COMMAND: '.venv/bin/python app.py'
+  APP_PORT: '3000'
+  APP_LOG_FILE: '/tmp/apm-test-app.log'
 
   # Advanced restart mode for PM2/systemd/Docker/custom process managers.
   # If set, this command runs instead of APP_WORKING_DIR/APP_START_COMMAND simple mode.
@@ -90,7 +90,7 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H 35.200.203.148 >> ~/.ssh/known_hosts
 
-      - name: Auto-Configure Server Observability
+      - name: Configure Grafana Alloy Collector
         env:
           GRAFANA_PROMETHEUS_URL: ${{ secrets.GRAFANA_PROMETHEUS_URL }}
           GRAFANA_INSTANCE_ID: ${{ secrets.GRAFANA_INSTANCE_ID }}
@@ -100,7 +100,6 @@ jobs:
           GRAFANA_TEMPO_USER: ${{ secrets.GRAFANA_TEMPO_USER }}
           GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
         run: |
-          # Write config file locally on the runner first
           cat > /tmp/config.alloy << EOF
 
           // 1. Metrics (Prometheus)
@@ -198,21 +197,27 @@ jobs:
           }
           EOF
 
-          # Copy config to server, then run setup commands
           scp /tmp/config.alloy ${{ env.SSH_USER }}@${{ env.TARGET_IP }}:/tmp/config.alloy
 
           ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
-            echo "--- Provisioning Monitoring Agents ---"
-
-            # Install Alloy if missing
+            echo "--- Configuring Grafana Alloy Collector ---"
             if ! command -v alloy &> /dev/null; then
               sudo mkdir -p /etc/apt/keyrings/
               curl -fsSL https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null
               echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
               sudo apt-get update && sudo apt-get install -y alloy
             fi
-            # =========================================================================================
-            # Configure runtime-specific OpenTelemetry instrumentation.
+            sudo cp /tmp/config.alloy /etc/alloy/config.alloy
+            sudo systemctl enable alloy
+            sudo systemctl restart alloy
+            sleep 3
+            sudo systemctl status alloy --no-pager
+          SSHEOF
+
+      - name: Configure OpenTelemetry Runtime
+        run: |
+          ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
+            echo "--- Configuring OpenTelemetry Runtime ---"
             sudo sed -i '/NODE_OPTIONS/d' /etc/environment
             sudo sed -i '/NODE_PATH/d' /etc/environment
             sudo sed -i '/OTEL_/d' /etc/environment
@@ -230,9 +235,7 @@ jobs:
                   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
                   sudo apt-get install -y nodejs
                 fi
-
                 unset NODE_OPTIONS
-
                 if ! node -e "require('@opentelemetry/auto-instrumentations-node')" 2>/dev/null; then
                   echo "⚠️ Installing Node.js OTel auto-instrumentation globally..."
                   sudo npm install -g \
@@ -243,20 +246,14 @@ jobs:
                 else
                   echo "✅ Node.js OTel already installed globally"
                 fi
-
                 GLOBAL_NODE_MODULES=$(unset NODE_OPTIONS && sudo npm root -g)
-                echo "Global node_modules path: $GLOBAL_NODE_MODULES"
-
                 if [ ! -d "$GLOBAL_NODE_MODULES/@opentelemetry/auto-instrumentations-node" ]; then
                   echo "❌ Node.js OTel module not found at $GLOBAL_NODE_MODULES — install failed"
                   ls "$GLOBAL_NODE_MODULES" || true
                   exit 1
                 fi
-
                 echo "NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register" | sudo tee -a /etc/environment
                 echo "NODE_PATH=${GLOBAL_NODE_MODULES}" | sudo tee -a /etc/environment
-                echo "✅ Node.js apps that inherit /etc/environment will send APM to Alloy after restart"
-                echo "Developer action: restart your Node.js app after this workflow so it picks up NODE_OPTIONS and OTEL_SERVICE_NAME=${{ env.APP_SERVICE_NAME }}."
                 ;;
               python)
                 if ! command -v python3 &> /dev/null; then
@@ -264,35 +261,27 @@ jobs:
                 elif ! python3 -m pip --version &> /dev/null; then
                   sudo apt-get update && sudo apt-get install -y python3-pip
                 fi
-
                 python3 -m pip install --user --upgrade \
                   opentelemetry-distro \
                   opentelemetry-exporter-otlp
                 python3 -m opentelemetry.instrumentation.bootstrap -a install
                 echo "OTEL_METRICS_EXPORTER=none" | sudo tee -a /etc/environment
                 echo "OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda" | sudo tee -a /etc/environment
-                echo "✅ Python OTel packages installed. Start Python apps with: opentelemetry-instrument python <app-entrypoint>"
-                echo "Developer action: start your Python app with opentelemetry-instrument so it emits service.name=${{ env.APP_SERVICE_NAME }} to http://localhost:4318."
-                echo "Virtualenv example: .venv/bin/opentelemetry-instrument .venv/bin/python app.py"
                 ;;
               none)
                 echo "✅ Runtime instrumentation disabled. Alloy will still collect host metrics/logs and receive OTLP from instrumented apps."
-                echo "Developer action: instrument the app manually with an OpenTelemetry SDK and export OTLP/HTTP traces to http://localhost:4318."
-                echo "Use service.name=${{ env.APP_SERVICE_NAME }} in the app SDK/resource configuration."
                 ;;
               *)
                 echo "❌ Unsupported APP_RUNTIME='${{ env.APP_RUNTIME }}'. Use node, python, or none."
                 exit 1
                 ;;
             esac
-            # =========================================================================================
-            # Move config into place
-            sudo cp /tmp/config.alloy /etc/alloy/config.alloy
-            sudo systemctl enable alloy
-            sudo systemctl restart alloy
-            sleep 3
-            sudo systemctl status alloy --no-pager
+          SSHEOF
 
+      - name: Start Application with OpenTelemetry
+        run: |
+          ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
+            echo "--- Starting Application with OpenTelemetry ---"
             set -a
             [ -f /etc/environment ] && . /etc/environment
             set +a
@@ -301,9 +290,7 @@ jobs:
               echo "--- Running advanced app restart command ---"
               bash -lc '${{ env.APP_RESTART_COMMAND }}'
             elif [ -n "${{ env.APP_WORKING_DIR }}" ] && [ -n "${{ env.APP_START_COMMAND }}" ]; then
-              echo "--- Starting app from APP_WORKING_DIR and APP_START_COMMAND ---"
               cd "${{ env.APP_WORKING_DIR }}"
-
               case "${{ env.APP_RUNTIME }}" in
                 python)
                   PYTHON_BIN=$(printf '%s\n' "${{ env.APP_START_COMMAND }}" | awk '{print $1}')
@@ -311,10 +298,8 @@ jobs:
                     echo "❌ Python executable from APP_START_COMMAND was not found: $PYTHON_BIN"
                     exit 1
                   fi
-
                   "$PYTHON_BIN" -m pip install --upgrade opentelemetry-distro opentelemetry-exporter-otlp
                   "$PYTHON_BIN" -m opentelemetry.instrumentation.bootstrap -a install
-
                   PYTHON_DIR=$(dirname "$PYTHON_BIN")
                   if [ -x "$PYTHON_DIR/opentelemetry-instrument" ]; then
                     OTEL_INSTRUMENT_BIN="$PYTHON_DIR/opentelemetry-instrument"
@@ -324,7 +309,6 @@ jobs:
                     echo "❌ opentelemetry-instrument not found after installation."
                     exit 1
                   fi
-
                   nohup $OTEL_INSTRUMENT_BIN ${{ env.APP_START_COMMAND }} > "${{ env.APP_LOG_FILE }}" 2>&1 &
                   ;;
                 node)
@@ -343,7 +327,6 @@ jobs:
                   exit 1
                   ;;
               esac
-
               sleep 5
               if [ -n "${{ env.APP_PORT }}" ]; then
                 if curl -sf "http://localhost:${{ env.APP_PORT }}/health" >/dev/null || curl -sf "http://localhost:${{ env.APP_PORT }}/" >/dev/null; then
@@ -357,15 +340,15 @@ jobs:
             else
               echo "APP_RESTART_COMMAND and simple app start settings are blank; skipping app restart/start."
             fi
+          SSHEOF
 
-            # =========================================================================================
-            # Non-blocking Sentry SDK readiness check.
-            # Developers own Sentry project creation and SDK integration; this workflow only reports status.
+      - name: Check Sentry SDK Integration
+        run: |
+          ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
+            echo "--- Checking Sentry SDK Integration ---"
             if [ -n "${{ env.APP_WORKING_DIR }}" ] && [ -d "${{ env.APP_WORKING_DIR }}" ]; then
-              echo "--- Checking Sentry SDK integration ---"
               cd "${{ env.APP_WORKING_DIR }}"
               SENTRY_INTEGRATED="false"
-
               case "${{ env.APP_RUNTIME }}" in
                 python)
                   if grep -R "sentry_sdk\.init\|import sentry_sdk" . \
@@ -393,7 +376,6 @@ jobs:
                   echo "⚠️ Sentry SDK readiness check is not automated for APP_RUNTIME=${{ env.APP_RUNTIME }}."
                   ;;
               esac
-
               if [ "$SENTRY_INTEGRATED" = "true" ]; then
                 echo "✅ Sentry SDK integration detected. Error tracking and crash reporting are implemented by the application."
               else
