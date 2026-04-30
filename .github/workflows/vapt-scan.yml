@@ -47,16 +47,16 @@ env:
   APP_RUNTIME: 'python'
 
   # APP_SERVICE_NAME appears in Grafana Tempo/APM as service.name.
-  # APP_SERVICE_NAME: ${{ github.event.repository.name }}
-  APP_SERVICE_NAME: 'apm-test-app' 
+  APP_SERVICE_NAME: ${{ github.event.repository.name }}
+
   # Simple app start mode. Set these when the workflow should start the app directly.
   # Python example: APP_START_COMMAND='.venv/bin/python app.py'
   # Node example: APP_START_COMMAND='node server.js'
   # The workflow adds OTEL env vars automatically and prefixes Python with opentelemetry-instrument.
-  APP_WORKING_DIR: '/home/husaintrivedi/apm-test-app'
-  APP_START_COMMAND: '.venv/bin/python app.py'
-  APP_PORT: '3000'
-  APP_LOG_FILE: '/tmp/apm-test-app.log'
+  APP_WORKING_DIR: ''
+  APP_START_COMMAND: ''
+  APP_PORT: ''
+  APP_LOG_FILE: '/tmp/app.log'
 
   # Advanced restart mode for PM2/systemd/Docker/custom process managers.
   # If set, this command runs instead of APP_WORKING_DIR/APP_START_COMMAND simple mode.
@@ -362,6 +362,51 @@ jobs:
               echo "APP_RESTART_COMMAND and simple app start settings are blank; skipping app restart/start."
             fi
 
+            # =========================================================================================
+            # Non-blocking Sentry SDK readiness check.
+            # Developers own Sentry project creation and SDK integration; this workflow only reports status.
+            if [ -n "${{ env.APP_WORKING_DIR }}" ] && [ -d "${{ env.APP_WORKING_DIR }}" ]; then
+              echo "--- Checking Sentry SDK integration ---"
+              cd "${{ env.APP_WORKING_DIR }}"
+              SENTRY_INTEGRATED="false"
+
+              case "${{ env.APP_RUNTIME }}" in
+                python)
+                  if grep -R "sentry_sdk\.init\|import sentry_sdk" . \
+                    --include='*.py' \
+                    --exclude-dir='.venv' \
+                    --exclude-dir='venv' \
+                    --exclude-dir='__pycache__' \
+                    --exclude-dir='.git' >/dev/null 2>&1; then
+                    SENTRY_INTEGRATED="true"
+                  fi
+                  ;;
+                node)
+                  if { [ -f package.json ] && grep -q '"@sentry/' package.json; } || \
+                    grep -R "Sentry\.init\|@sentry/" . \
+                    --include='*.js' \
+                    --include='*.jsx' \
+                    --include='*.ts' \
+                    --include='*.tsx' \
+                    --exclude-dir='node_modules' \
+                    --exclude-dir='.git' >/dev/null 2>&1; then
+                    SENTRY_INTEGRATED="true"
+                  fi
+                  ;;
+                *)
+                  echo "⚠️ Sentry SDK readiness check is not automated for APP_RUNTIME=${{ env.APP_RUNTIME }}."
+                  ;;
+              esac
+
+              if [ "$SENTRY_INTEGRATED" = "true" ]; then
+                echo "✅ Sentry SDK integration detected. Error tracking and crash reporting are implemented by the application."
+              else
+                echo "⚠️ Sentry SDK integration not detected. Pipeline will continue, but application error tracking and crash reporting may not be active."
+              fi
+            else
+              echo "⚠️ APP_WORKING_DIR is blank or missing; skipping Sentry SDK integration check."
+            fi
+
             # Sentry metadata
             sudo mkdir -p /home/${{ env.SSH_USER }}/simulated-project
             echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /home/${{ env.SSH_USER }}/simulated-project/.env
@@ -599,67 +644,67 @@ jobs:
               sys.exit(1)
 
           PYEOF
-      - name: Send Google Chat Alert on Failure
-        if: failure()
-        run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-          INCIDENT_ID="INC-${{ github.run_number }}"
+      # - name: Send Google Chat Alert on Failure
+      #   if: failure()
+      #   run: |
+      #     RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      #     TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+      #     INCIDENT_ID="INC-${{ github.run_number }}"
 
-          ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
-          ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
-          CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
+      #     ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
+      #     ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
+      #     CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
 
-          LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
-          ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
-          EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
+      #     LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
+      #     ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
+      #     EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
 
-          FAILURES=""
-          if (( ACTUAL_LAT > LAT_LIMIT )); then
-            FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
-          fi
-          if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
-            FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
-          fi
-          if [ "$CHECK_FAILS" -gt 0 ]; then
-            FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
-          fi
-          if [ -z "$FAILURES" ]; then
-            FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
-          fi
+      #     FAILURES=""
+      #     if (( ACTUAL_LAT > LAT_LIMIT )); then
+      #       FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
+      #     fi
+      #     if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
+      #       FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
+      #     fi
+      #     if [ "$CHECK_FAILS" -gt 0 ]; then
+      #       FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
+      #     fi
+      #     if [ -z "$FAILURES" ]; then
+      #       FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
+      #     fi
 
-          MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          Incident ID : %s
-          Time        : %s
-          Repository  : %s
-          Product ID  : %s
-          Target      : %s
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          *FAILURE ANALYSIS*
+      #     MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
+      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      #     Incident ID : %s
+      #     Time        : %s
+      #     Repository  : %s
+      #     Product ID  : %s
+      #     Target      : %s
+      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      #     *FAILURE ANALYSIS*
 
-          %s
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          *ACTIONS*
+      #     %s
+      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      #     *ACTIONS*
 
-          Investigate : <%s|View GitHub Actions Run>
-          Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
-                "$INCIDENT_ID" \
-                "$TIMESTAMP" \
-                "${{ github.event.repository.name }}" \
-                "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
-                "${{ env.TARGET_URL }}" \
-                "$FAILURES" \
-                "$RUN_URL")
+      #     Investigate : <%s|View GitHub Actions Run>
+      #     Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
+      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      #     *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
+      #           "$INCIDENT_ID" \
+      #           "$TIMESTAMP" \
+      #           "${{ github.event.repository.name }}" \
+      #           "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+      #           "${{ env.TARGET_URL }}" \
+      #           "$FAILURES" \
+      #           "$RUN_URL")
 
-              jq -n --arg text "$MESSAGE" '{"text": $text}' | \
-                curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
-                  -H "Content-Type: application/json" \
-                  -d @-
+      #         jq -n --arg text "$MESSAGE" '{"text": $text}' | \
+      #           curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
+      #             -H "Content-Type: application/json" \
+      #             -d @-
 
-              exit 1
+      #         exit 1
 
       - name: Report Failure to Sentry
         if: failure()
