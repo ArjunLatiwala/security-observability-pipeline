@@ -47,8 +47,8 @@ env:
   APP_RUNTIME: 'python'
 
   # APP_SERVICE_NAME appears in Grafana Tempo/APM as service.name.
-  APP_SERVICE_NAME: ${{ github.event.repository.name }}
-
+  # APP_SERVICE_NAME: ${{ github.event.repository.name }}
+  APP_SERVICE_NAME: 'apm-test-app' 
   # Simple app start mode. Set these when the workflow should start the app directly.
   # Python example: APP_START_COMMAND='.venv/bin/python app.py'
   # Node example: APP_START_COMMAND='node server.js'
