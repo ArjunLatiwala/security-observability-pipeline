@@ -257,14 +257,10 @@ jobs:
                 ;;
               python)
                 if ! command -v python3 &> /dev/null; then
-                  sudo apt-get update && sudo apt-get install -y python3 python3-pip
+                  sudo apt-get update && sudo apt-get install -y python3 python3-pip python3-venv
                 elif ! python3 -m pip --version &> /dev/null; then
-                  sudo apt-get update && sudo apt-get install -y python3-pip
+                  sudo apt-get update && sudo apt-get install -y python3-pip python3-venv
                 fi
-                python3 -m pip install --user --upgrade \
-                  opentelemetry-distro \
-                  opentelemetry-exporter-otlp
-                python3 -m opentelemetry.instrumentation.bootstrap -a install
                 echo "OTEL_METRICS_EXPORTER=none" | sudo tee -a /etc/environment
                 echo "OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda" | sudo tee -a /etc/environment
                 ;;
@@ -296,6 +292,12 @@ jobs:
                   PYTHON_BIN=$(printf '%s\n' "${{ env.APP_START_COMMAND }}" | awk '{print $1}')
                   if [ ! -x "$PYTHON_BIN" ] && ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
                     echo "❌ Python executable from APP_START_COMMAND was not found: $PYTHON_BIN"
+                    exit 1
+                  fi
+                  if [ "$PYTHON_BIN" = "python" ] || [ "$PYTHON_BIN" = "python3" ] || [ "$PYTHON_BIN" = "/usr/bin/python3" ] || [ "$PYTHON_BIN" = "/usr/bin/python" ]; then
+                    echo "❌ APP_START_COMMAND uses system Python: $PYTHON_BIN"
+                    echo "   System Python may be externally managed by the OS (PEP 668), so the workflow will not install OpenTelemetry into it."
+                    echo "   Use a virtualenv command such as APP_START_COMMAND='.venv/bin/python app.py' or manage instrumentation through APP_RESTART_COMMAND."
                     exit 1
                   fi
                   "$PYTHON_BIN" -m pip install --upgrade opentelemetry-distro opentelemetry-exporter-otlp
