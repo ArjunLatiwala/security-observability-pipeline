@@ -69,9 +69,9 @@ env:
 
 
   # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
-  LATENCY_THRESHOLD: 10          # Fail: Real latency > 10ms (Set to 2000 for PROD)
-  EXPECTED_STATUS: 201           # Fail: Site is 200 (Set to 200 for PROD)
-  ERROR_RATE_LIMIT: 0.0001       # Fail: Tiny threshold (Set to 0.01 for PROD)
+  LATENCY_THRESHOLD: 2000          # Fail: Real latency > 10ms (Set to 2000 for PROD)
+  EXPECTED_STATUS: 200           # Fail: Site is 200 (Set to 200 for PROD)
+  ERROR_RATE_LIMIT: 0.01       # Fail: Tiny threshold (Set to 0.01 for PROD)
 
 jobs:
   # ==========================================
