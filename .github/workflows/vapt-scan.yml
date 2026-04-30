@@ -14,12 +14,15 @@
 # │ none   │ App is not Node/Python, or app is already manually instrumented │ Keeps Alloy only; no automatic app instrumentation                     │
 # └────────┴─────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┘
 #
-# Runtime startup expectations:
-# - node: restart the Node app after this workflow so it inherits /etc/environment.
-#   The workflow sets NODE_OPTIONS, NODE_PATH, OTEL_SERVICE_NAME, and OTLP exporter env vars.
-# - python: start the app with opentelemetry-instrument, for example:
-#   opentelemetry-instrument python app.py
-#   If using a virtualenv, prefer: .venv/bin/opentelemetry-instrument .venv/bin/python app.py
+# Optional app start/restart configuration:
+# - Simple mode: set APP_WORKING_DIR and APP_START_COMMAND. The workflow injects the
+#   required OTEL_* env vars automatically and prefixes Python commands with
+#   opentelemetry-instrument when APP_RUNTIME=python.
+# - Advanced mode: set APP_RESTART_COMMAND for PM2/systemd/Docker/custom process managers.
+#   If APP_RESTART_COMMAND is set, it takes precedence over simple mode.
+# - node simple example: APP_START_COMMAND='node server.js'
+# - python simple example: APP_START_COMMAND='.venv/bin/python app.py'
+# - python FastAPI example: APP_START_COMMAND='.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000'
 # - none: configure instrumentation inside the app manually, or point any supported OpenTelemetry SDK to http://localhost:4318.
 #
 # Grafana check:
@@ -45,6 +48,20 @@ env:
 
   # APP_SERVICE_NAME appears in Grafana Tempo/APM as service.name.
   APP_SERVICE_NAME: ${{ github.event.repository.name }}
+
+  # Simple app start mode. Set these when the workflow should start the app directly.
+  # Python example: APP_START_COMMAND='.venv/bin/python app.py'
+  # Node example: APP_START_COMMAND='node server.js'
+  # The workflow adds OTEL env vars automatically and prefixes Python with opentelemetry-instrument.
+  APP_WORKING_DIR: '/home/husaintrivedi/apm-test-app'
+  APP_START_COMMAND: '.venv/bin/python app.py'
+  APP_PORT: '3000'
+  APP_LOG_FILE: '/tmp/apm-test-app.log'
+
+  # Advanced restart mode for PM2/systemd/Docker/custom process managers.
+  # If set, this command runs instead of APP_WORKING_DIR/APP_START_COMMAND simple mode.
+  # Examples: pm2 restart my-app --update-env, sudo systemctl restart my-app.
+  APP_RESTART_COMMAND: ''
 
   # --- WAZUH SERVER CONFIGURATION ---
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
@@ -280,218 +297,81 @@ jobs:
             sleep 3
             sudo systemctl status alloy --no-pager
 
+            set -a
+            [ -f /etc/environment ] && . /etc/environment
+            set +a
+
+            if [ -n "${{ env.APP_RESTART_COMMAND }}" ]; then
+              echo "--- Running advanced app restart command ---"
+              bash -lc '${{ env.APP_RESTART_COMMAND }}'
+            elif [ -n "${{ env.APP_WORKING_DIR }}" ] && [ -n "${{ env.APP_START_COMMAND }}" ]; then
+              echo "--- Starting app from APP_WORKING_DIR and APP_START_COMMAND ---"
+              cd "${{ env.APP_WORKING_DIR }}"
+
+              case "${{ env.APP_RUNTIME }}" in
+                python)
+                  PYTHON_BIN=$(printf '%s\n' "${{ env.APP_START_COMMAND }}" | awk '{print $1}')
+                  if [ ! -x "$PYTHON_BIN" ] && ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+                    echo "❌ Python executable from APP_START_COMMAND was not found: $PYTHON_BIN"
+                    exit 1
+                  fi
+
+                  "$PYTHON_BIN" -m pip install --upgrade opentelemetry-distro opentelemetry-exporter-otlp
+                  "$PYTHON_BIN" -m opentelemetry.instrumentation.bootstrap -a install
+
+                  PYTHON_DIR=$(dirname "$PYTHON_BIN")
+                  if [ -x "$PYTHON_DIR/opentelemetry-instrument" ]; then
+                    OTEL_INSTRUMENT_BIN="$PYTHON_DIR/opentelemetry-instrument"
+                  elif command -v opentelemetry-instrument >/dev/null 2>&1; then
+                    OTEL_INSTRUMENT_BIN="opentelemetry-instrument"
+                  else
+                    echo "❌ opentelemetry-instrument not found after installation."
+                    exit 1
+                  fi
+
+                  nohup $OTEL_INSTRUMENT_BIN ${{ env.APP_START_COMMAND }} > "${{ env.APP_LOG_FILE }}" 2>&1 &
+                  ;;
+                node)
+                  if [ -f package.json ]; then
+                    npm install @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/auto-instrumentations-node
+                  else
+                    echo "⚠️ package.json not found in APP_WORKING_DIR; using global Node OpenTelemetry packages from runtime setup."
+                  fi
+                  nohup ${{ env.APP_START_COMMAND }} > "${{ env.APP_LOG_FILE }}" 2>&1 &
+                  ;;
+                none)
+                  nohup ${{ env.APP_START_COMMAND }} > "${{ env.APP_LOG_FILE }}" 2>&1 &
+                  ;;
+                *)
+                  echo "❌ Unsupported APP_RUNTIME='${{ env.APP_RUNTIME }}'. Use node, python, or none."
+                  exit 1
+                  ;;
+              esac
+
+              sleep 5
+              if [ -n "${{ env.APP_PORT }}" ]; then
+                if curl -sf "http://localhost:${{ env.APP_PORT }}/health" >/dev/null || curl -sf "http://localhost:${{ env.APP_PORT }}/" >/dev/null; then
+                  echo "✅ App is responding on port ${{ env.APP_PORT }}"
+                else
+                  echo "❌ App did not respond on port ${{ env.APP_PORT }}"
+                  cat "${{ env.APP_LOG_FILE }}" || true
+                  exit 1
+                fi
+              fi
+            else
+              echo "APP_RESTART_COMMAND and simple app start settings are blank; skipping app restart/start."
+            fi
+
             # Sentry metadata
             sudo mkdir -p /home/${{ env.SSH_USER }}/simulated-project
             echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /home/${{ env.SSH_USER }}/simulated-project/.env
           SSHEOF
 
   # ==========================================
-  # NEW JOB: Deploy Demo App for APM Testing
-  # ==========================================
-  deploy_demo_app:
-    needs: provision_monitoring
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup SSH Key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ env.TARGET_IP }} >> ~/.ssh/known_hosts
-
-      - name: Write Demo App to Server
-        run: |
-          # ── app.py ─────────────────────────────────────────────
-          cat > /tmp/app.py << 'APPEOF'
-          import os
-          import time
-          import requests
-          from flask import Flask, jsonify
-
-          app = Flask(__name__)
-          INVENTORY_URL = os.getenv('INVENTORY_URL', 'http://localhost:3001/inventory')
-
-          @app.route('/')
-          def index():
-              return jsonify({
-                  'status': 'ok',
-                  'service': os.getenv('OTEL_SERVICE_NAME', 'demo-python-app'),
-                  'message': 'Python Flask app is being traced through OpenTelemetry'
-              })
-
-          @app.route('/health')
-          def health():
-              return jsonify({'status': 'healthy'})
-
-          @app.route('/api/orders')
-          def orders():
-              inventory = requests.get(INVENTORY_URL, timeout=2)
-              inventory.raise_for_status()
-              return jsonify({
-                  'orders': [
-                      {'id': 101, 'status': 'created'},
-                      {'id': 102, 'status': 'processing'}
-                  ],
-                  'inventory': inventory.json()
-              })
-
-          @app.route('/slow')
-          def slow():
-              time.sleep(0.3)
-              return jsonify({'message': 'Slow Python endpoint traced automatically'})
-
-          @app.route('/error')
-          def error():
-              raise RuntimeError('Intentional demo error for APM trace testing')
-
-          if __name__ == '__main__':
-              app.run(host='0.0.0.0', port=3000)
-          APPEOF
-
-          cat > /tmp/inventory_app.py << 'INVENTORYEOF'
-          import os
-          from flask import Flask, jsonify
-
-          app = Flask(__name__)
-
-          @app.route('/health')
-          def health():
-              return jsonify({'status': 'healthy'})
-
-          @app.route('/inventory')
-          def inventory():
-              return jsonify({
-                  'service': os.getenv('OTEL_SERVICE_NAME', 'demo-inventory-service'),
-                  'items_available': 42
-              })
-
-          if __name__ == '__main__':
-              app.run(host='127.0.0.1', port=3001)
-          INVENTORYEOF
-
-          cat > /tmp/requirements.txt << 'REQEOF'
-          flask==3.0.3
-          requests==2.32.3
-          setuptools<81
-          opentelemetry-distro==0.47b0
-          opentelemetry-exporter-otlp==1.26.0
-          REQEOF
-
-          scp /tmp/app.py /tmp/inventory_app.py /tmp/requirements.txt ${{ env.SSH_USER }}@${{ env.TARGET_IP }}:/tmp/
-
-      - name: Install & Start Demo App on Server
-        run: |
-          ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
-            echo "--- Setting up Python demo app ---"
-
-            if ! command -v python3 &> /dev/null; then
-              sudo apt-get update && sudo apt-get install -y python3 python3-venv python3-pip
-            else
-              sudo apt-get update && sudo apt-get install -y python3-venv python3-pip
-            fi
-
-            pkill -f "/home/${{ env.SSH_USER }}/demo-app/.venv/bin/python /home/${{ env.SSH_USER }}/demo-app/app.py" 2>/dev/null || true
-            pkill -f "opentelemetry-instrument.*demo-app/app.py" 2>/dev/null || true
-            pkill -f "opentelemetry-instrument.*demo-app/inventory_app.py" 2>/dev/null || true
-            pkill -f "node.*demo-app" 2>/dev/null || true
-            pkill -f "app.js" 2>/dev/null || true
-            if sudo lsof -ti :3000 >/dev/null 2>&1; then
-              sudo kill $(sudo lsof -ti :3000) 2>/dev/null || true
-            fi
-            if sudo lsof -ti :3001 >/dev/null 2>&1; then
-              sudo kill $(sudo lsof -ti :3001) 2>/dev/null || true
-            fi
-            sleep 2
-
-            sudo mkdir -p /home/${{ env.SSH_USER }}/demo-app
-            sudo cp /tmp/app.py /tmp/inventory_app.py /tmp/requirements.txt /home/${{ env.SSH_USER }}/demo-app/
-            sudo chown -R ${{ env.SSH_USER }}:${{ env.SSH_USER }} /home/${{ env.SSH_USER }}/demo-app
-
-            cd /home/${{ env.SSH_USER }}/demo-app
-            python3 -m venv .venv
-            .venv/bin/python -m pip install --upgrade pip
-            .venv/bin/python -m pip install -r requirements.txt
-            .venv/bin/opentelemetry-bootstrap -a install
-            .venv/bin/python -m pip uninstall -y opentelemetry-instrumentation-aws-lambda
-
-            set -a; [ -f /etc/environment ] && . /etc/environment; set +a;
-
-            OTEL_SERVICE_NAME=${{ env.APP_SERVICE_NAME }}-inventory OTEL_RESOURCE_ATTRIBUTES="service.namespace=${{ github.repository_owner }},deployment.environment=github-actions,github.repository=${{ github.repository }},github.repository.name=${{ github.event.repository.name }}" OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python inventory_app.py > /tmp/demo-inventory.log 2>&1 &
-            echo $! > /tmp/demo-inventory.pid
-            sleep 2
-
-            OTEL_SERVICE_NAME=${{ env.APP_SERVICE_NAME }} OTEL_RESOURCE_ATTRIBUTES="service.namespace=${{ github.repository_owner }},deployment.environment=github-actions,github.repository=${{ github.repository }},github.repository.name=${{ github.event.repository.name }}" OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda APP_VERSION="${{ github.sha }}" nohup .venv/bin/opentelemetry-instrument .venv/bin/python app.py > /tmp/demo-app.log 2>&1 &
-            echo $! > /tmp/demo-app.pid
-            sleep 5
-
-            if curl -sf http://localhost:3001/health > /dev/null && curl -sf http://localhost:3000/health > /dev/null && curl -sf http://localhost:3000/api/orders > /dev/null; then
-              echo "✓ Python demo app and inventory service are up"
-            else
-              echo "✗ Python demo services failed to start or routes are unavailable"
-              cat /tmp/demo-inventory.log || true
-              cat /tmp/demo-app.log || true
-              exit 1
-            fi
-          SSHEOF
-
-      - name: Generate APM Trace Data (Warm-up Requests)
-        run: |
-          ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
-            echo "--- Generating trace data ---"
-
-            # Hit each route multiple times to produce varied trace spans in Tempo
-            for i in $(seq 1 10); do
-              curl -sf http://localhost:3000/ > /dev/null
-              sleep 0.3
-            done
-            echo "✓ Root endpoint: 10 requests"
-
-            for i in $(seq 1 5); do
-              curl -sf http://localhost:3000/slow > /dev/null
-              sleep 0.2
-            done
-            echo "✓ Slow endpoint: 5 requests (300ms spans visible in Tempo)"
-
-            for i in $(seq 1 30); do
-              curl -sf http://localhost:3000/api/orders > /dev/null
-              sleep 0.2
-            done
-            echo "✓ Orders endpoint: 30 requests with demo-python-app → demo-inventory-service spans"
-
-            for i in $(seq 1 5); do
-              curl -sf http://localhost:3000/error > /dev/null || true
-              sleep 0.2
-            done
-            echo "✓ Error endpoint: 5 requests (error spans with exceptions in Tempo)"
-
-            echo "--- All trace data generated. Check Grafana → Explore → Tempo ---"
-          SSHEOF
-
-      - name: Log Demo App Deployment to Wazuh
-        if: always()
-        run: |
-          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          STATUS=$(ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} "curl -sf http://localhost:3000/ > /dev/null && echo success || echo failure")
-          curl -k -s -X POST "${{ env.WAZUH_INDEXER_URL }}/pipeline-audit/_doc/" \
-            -u "admin:${{ secrets.WAZUH_INDEXER_PASSWORD }}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"timestamp\": \"$TIMESTAMP\",
-              \"event_type\": \"DEMO_APP_DEPLOYMENT\",
-              \"repo\": \"${{ github.event.repository.name }}\",
-              \"status\": \"$STATUS\",
-              \"app_version\": \"${{ github.sha }}\",
-              \"service_name\": \"${{ env.APP_SERVICE_NAME }}\",
-              \"otel_endpoint\": \"http://localhost:4318\",
-              \"breach_details\": \"Demo Python Flask app deployed for APM/Tempo trace testing\",
-              \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-            }"
-  # ==========================================
   # JOB 1: STEP 4 - Deep Security (VAPT)
   # ==========================================
   security_vapt_job:
-    # needs: provision_monitoring
-    needs: deploy_demo_app   # ← was: provision_monitoring
+    needs: provision_monitoring
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -552,8 +432,7 @@ jobs:
   # JOB 2: STEP 5 - Benchmarking + Sentry
   # ==========================================
   benchmarking_job:
-    # needs: provision_monitoring
-    needs: deploy_demo_app   # ← was: provision_monitoring
+    needs: provision_monitoring
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
