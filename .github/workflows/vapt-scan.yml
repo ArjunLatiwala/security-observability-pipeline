@@ -620,67 +620,67 @@ jobs:
               sys.exit(1)
 
           PYEOF
-      - name: Send Google Chat Alert on Failure
-        if: failure()
-        run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-          INCIDENT_ID="INC-${{ github.run_number }}"
+      # - name: Send Google Chat Alert on Failure
+      #   if: failure()
+      #   run: |
+      #     RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      #     TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+      #     INCIDENT_ID="INC-${{ github.run_number }}"
 
-          ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
-          ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
-          CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
+      #     ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
+      #     ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
+      #     CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
 
-          LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
-          ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
-          EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
+      #     LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
+      #     ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
+      #     EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
 
-          FAILURES=""
-          if (( ACTUAL_LAT > LAT_LIMIT )); then
-            FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
-          fi
-          if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
-            FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
-          fi
-          if [ "$CHECK_FAILS" -gt 0 ]; then
-            FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
-          fi
-          if [ -z "$FAILURES" ]; then
-            FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
-          fi
+      #     FAILURES=""
+      #     if (( ACTUAL_LAT > LAT_LIMIT )); then
+      #       FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
+      #     fi
+      #     if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
+      #       FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
+      #     fi
+      #     if [ "$CHECK_FAILS" -gt 0 ]; then
+      #       FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
+      #     fi
+      #     if [ -z "$FAILURES" ]; then
+      #       FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
+      #     fi
 
-          MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          Incident ID : %s
-          Time        : %s
-          Repository  : %s
-          Product ID  : %s
-          Target      : %s
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          *FAILURE ANALYSIS*
+      #     MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
+      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      #     Incident ID : %s
+      #     Time        : %s
+      #     Repository  : %s
+      #     Product ID  : %s
+      #     Target      : %s
+      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      #     *FAILURE ANALYSIS*
 
-          %s
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          *ACTIONS*
+      #     %s
+      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      #     *ACTIONS*
 
-          Investigate : <%s|View GitHub Actions Run>
-          Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
-                "$INCIDENT_ID" \
-                "$TIMESTAMP" \
-                "${{ github.event.repository.name }}" \
-                "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
-                "${{ env.TARGET_URL }}" \
-                "$FAILURES" \
-                "$RUN_URL")
+      #     Investigate : <%s|View GitHub Actions Run>
+      #     Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
+      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      #     *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
+      #           "$INCIDENT_ID" \
+      #           "$TIMESTAMP" \
+      #           "${{ github.event.repository.name }}" \
+      #           "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+      #           "${{ env.TARGET_URL }}" \
+      #           "$FAILURES" \
+      #           "$RUN_URL")
 
-              jq -n --arg text "$MESSAGE" '{"text": $text}' | \
-                curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
-                  -H "Content-Type: application/json" \
-                  -d @-
+      #         jq -n --arg text "$MESSAGE" '{"text": $text}' | \
+      #           curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
+      #             -H "Content-Type: application/json" \
+      #             -d @-
 
-              exit 1
+      #         exit 1
 
       - name: Upload Benchmarking Logs
         if: always()
