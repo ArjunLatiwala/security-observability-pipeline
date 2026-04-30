@@ -53,10 +53,10 @@ env:
   # Python example: APP_START_COMMAND='.venv/bin/python app.py'
   # Node example: APP_START_COMMAND='node server.js'
   # The workflow adds OTEL env vars automatically and prefixes Python with opentelemetry-instrument.
-  APP_WORKING_DIR: ''
-  APP_START_COMMAND: ''
-  APP_PORT: ''
-  APP_LOG_FILE: '/tmp/app.log'
+  APP_WORKING_DIR: '/home/husaintrivedi/apm-test-app'                                                                                                                                         
+  APP_START_COMMAND: '.venv/bin/python app.py'                                                                                                                                                
+  APP_PORT: '3000'                                                                                                                                                                            
+  APP_LOG_FILE: '/tmp/apm-test-app.log' 
 
   # Advanced restart mode for PM2/systemd/Docker/custom process managers.
   # If set, this command runs instead of APP_WORKING_DIR/APP_START_COMMAND simple mode.
@@ -67,9 +67,6 @@ env:
   WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
   WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
 
-  # --- SENTRY CONFIGURATION ---
-  SENTRY_ORG_SLUG: 'creole-studios-xj'
-  SENTRY_PROJECT_SLUG: 'security-observability-pipeline'
 
   # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
   LATENCY_THRESHOLD: 10          # Fail: Real latency > 10ms (Set to 2000 for PROD)
@@ -102,7 +99,6 @@ jobs:
           GRAFANA_TEMPO_URL: ${{ secrets.GRAFANA_TEMPO_URL }}
           GRAFANA_TEMPO_USER: ${{ secrets.GRAFANA_TEMPO_USER }}
           GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
-          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           # Write config file locally on the runner first
           cat > /tmp/config.alloy << EOF
@@ -406,10 +402,6 @@ jobs:
             else
               echo "⚠️ APP_WORKING_DIR is blank or missing; skipping Sentry SDK integration check."
             fi
-
-            # Sentry metadata
-            sudo mkdir -p /home/${{ env.SSH_USER }}/simulated-project
-            echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /home/${{ env.SSH_USER }}/simulated-project/.env
           SSHEOF
 
   # ==========================================
@@ -474,7 +466,7 @@ jobs:
           if [ "$ZAP_STATUS" = "vulnerable" ] || [ "$ZAP_STATUS" = "error" ]; then exit 1; fi
 
   # ==========================================
-  # JOB 2: STEP 5 - Benchmarking + Sentry
+  # JOB 2: STEP 5 - Benchmarking
   # ==========================================
   benchmarking_job:
     needs: provision_monitoring
@@ -483,22 +475,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Create Sentry Release
-        run: |
-          PREVIOUS_COMMIT=$(git rev-parse HEAD~1 2>/dev/null || echo "")
-
-          curl -X POST "https://sentry.io/api/0/organizations/${{ env.SENTRY_ORG_SLUG }}/releases/" \
-            -H "Authorization: Bearer ${{ secrets.SENTRY_AUTH_TOKEN }}" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"version\": \"${{ github.sha }}\",
-              \"projects\": [\"${{ env.SENTRY_PROJECT_SLUG }}\"],
-              \"refs\": [{
-                \"repository\": \"${{ github.repository }}\",
-                \"commit\": \"${{ github.sha }}\",
-                \"previousCommit\": \"${PREVIOUS_COMMIT}\"
-              }]
-            }"
       - name: Setup Tools (k6, jq, Apache Bench)
         run: sudo apt-get update && sudo apt-get install -y apache2-utils jq curl
 
@@ -644,111 +620,67 @@ jobs:
               sys.exit(1)
 
           PYEOF
-      # - name: Send Google Chat Alert on Failure
-      #   if: failure()
-      #   run: |
-      #     RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-      #     TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-      #     INCIDENT_ID="INC-${{ github.run_number }}"
-
-      #     ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
-      #     ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
-      #     CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
-
-      #     LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
-      #     ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
-      #     EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
-
-      #     FAILURES=""
-      #     if (( ACTUAL_LAT > LAT_LIMIT )); then
-      #       FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
-      #     fi
-      #     if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
-      #       FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
-      #     fi
-      #     if [ "$CHECK_FAILS" -gt 0 ]; then
-      #       FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
-      #     fi
-      #     if [ -z "$FAILURES" ]; then
-      #       FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
-      #     fi
-
-      #     MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     Incident ID : %s
-      #     Time        : %s
-      #     Repository  : %s
-      #     Product ID  : %s
-      #     Target      : %s
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *FAILURE ANALYSIS*
-
-      #     %s
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *ACTIONS*
-
-      #     Investigate : <%s|View GitHub Actions Run>
-      #     Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
-      #     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      #     *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
-      #           "$INCIDENT_ID" \
-      #           "$TIMESTAMP" \
-      #           "${{ github.event.repository.name }}" \
-      #           "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
-      #           "${{ env.TARGET_URL }}" \
-      #           "$FAILURES" \
-      #           "$RUN_URL")
-
-      #         jq -n --arg text "$MESSAGE" '{"text": $text}' | \
-      #           curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
-      #             -H "Content-Type: application/json" \
-      #             -d @-
-
-      #         exit 1
-
-      - name: Report Failure to Sentry
+      - name: Send Google Chat Alert on Failure
         if: failure()
         run: |
-          DSN="${{ secrets.SENTRY_DSN }}"
-          SENTRY_KEY=$(echo "$DSN" | sed 's|https://||' | cut -d'@' -f1)
-          SENTRY_HOST=$(echo "$DSN" | cut -d'@' -f2 | cut -d'/' -f1)
-          PROJECT_ID=$(echo "$DSN" | rev | cut -d'/' -f1 | rev)
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+          INCIDENT_ID="INC-${{ github.run_number }}"
 
           ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
           ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
           CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
 
-          curl -X POST "https://$SENTRY_HOST/api/$PROJECT_ID/store/" \
-            -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$SENTRY_KEY, sentry_client=curl/1.0" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"message\": \"Pipeline Failure: ${{ github.event.repository.name }}\",
-              \"exception\": {
-                \"values\": [{
-                  \"type\": \"Pipeline Failure: [${{ github.event.repository.name }}]\",
-                  \"value\": \"One or more thresholds breached in ${{ github.event.repository.name }}\"
-                }]
-              },
-              \"level\": \"error\",
-              \"environment\": \"${{ github.event.repository.name }}\",
-              \"release\": \"${{ github.sha }}\",
-              \"fingerprint\": [\"pipeline-failure\", \"${{ github.event.repository.name }}\"],
-              \"tags\": {
-                \"repo\": \"${{ github.event.repository.name }}\",
-                \"product_id\": \"${{ secrets.DEFECTDOJO_PRODUCT_ID }}\",
-                \"triggered_by\": \"github-actions\"
-              },
-              \"extra\": {
-                \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
-                \"latency_observed_ms\": \"${ACTUAL_LAT}\",
-                \"latency_threshold_ms\": \"${{ env.LATENCY_THRESHOLD }}\",
-                \"error_rate_observed\": \"${ACTUAL_ERR}\",
-                \"error_rate_limit\": \"${{ env.ERROR_RATE_LIMIT }}\",
-                \"status_check_fails\": \"${CHECK_FAILS}\",
-                \"status_code_expected\": \"${{ env.EXPECTED_STATUS }}\",
-                \"breach_summary\": \"${AUDIT_REPORT}\"
-              }
-            }"
+          LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
+          ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
+          EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
+
+          FAILURES=""
+          if (( ACTUAL_LAT > LAT_LIMIT )); then
+            FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
+          fi
+          if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
+            FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
+          fi
+          if [ "$CHECK_FAILS" -gt 0 ]; then
+            FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
+          fi
+          if [ -z "$FAILURES" ]; then
+            FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
+          fi
+
+          MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          Incident ID : %s
+          Time        : %s
+          Repository  : %s
+          Product ID  : %s
+          Target      : %s
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *FAILURE ANALYSIS*
+
+          %s
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *ACTIONS*
+
+          Investigate : <%s|View GitHub Actions Run>
+          Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
+                "$INCIDENT_ID" \
+                "$TIMESTAMP" \
+                "${{ github.event.repository.name }}" \
+                "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+                "${{ env.TARGET_URL }}" \
+                "$FAILURES" \
+                "$RUN_URL")
+
+              jq -n --arg text "$MESSAGE" '{"text": $text}' | \
+                curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
+                  -H "Content-Type: application/json" \
+                  -d @-
+
+              exit 1
 
       - name: Upload Benchmarking Logs
         if: always()
