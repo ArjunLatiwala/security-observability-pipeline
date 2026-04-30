@@ -69,9 +69,9 @@ env:
 
 
   # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
-  LATENCY_THRESHOLD: 2000          # Fail: Real latency > 10ms (Set to 2000 for PROD)
-  EXPECTED_STATUS: 200           # Fail: Site is 200 (Set to 200 for PROD)
-  ERROR_RATE_LIMIT: 0.01       # Fail: Tiny threshold (Set to 0.01 for PROD)
+  LATENCY_THRESHOLD: 10          # Fail: Real latency > 10ms (Set to 2000 for PROD)
+  EXPECTED_STATUS: 201           # Fail: Site is 200 (Set to 200 for PROD)
+  ERROR_RATE_LIMIT: 0.0001       # Fail: Tiny threshold (Set to 0.01 for PROD)
 
 jobs:
   # ==========================================
@@ -418,6 +418,40 @@ jobs:
             fi
           SSHEOF
 
+      - name: Write Provision Report
+        if: always()
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, datetime
+
+          report = {
+              "job": "provision_monitoring",
+              "status": "completed",
+              "timestamp": datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+              "repo": os.environ["GITHUB_REPOSITORY"].split("/", 1)[-1],
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "app_runtime": os.environ.get("APP_RUNTIME", ""),
+              "app_service_name": os.environ.get("APP_SERVICE_NAME", ""),
+              "app_working_dir": os.environ.get("APP_WORKING_DIR", ""),
+              "app_port": os.environ.get("APP_PORT", ""),
+              "grafana_alloy_configured": True,
+              "opentelemetry_runtime_attempted": True,
+              "app_start_attempted": bool(os.environ.get("APP_RESTART_COMMAND") or os.environ.get("APP_START_COMMAND")),
+              "sentry_sdk_check_executed": True,
+              "run_url": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          }
+
+          with open("provision-report.json", "w") as f:
+              json.dump(report, f, indent=2)
+          PYEOF
+
+      - name: Upload Provision Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: provision-report
+          path: provision-report.json
+
   # ==========================================
   # JOB 1: STEP 4 - Deep Security (VAPT)
   # ==========================================
@@ -477,7 +511,30 @@ jobs:
               \"breach_details\": \"$REPORT\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
+          jq -n \
+            --arg job "security_vapt_job" \
+            --arg timestamp "$TIMESTAMP" \
+            --arg repo "${{ github.event.repository.name }}" \
+            --arg repository "${{ github.repository }}" \
+            --arg target "${{ env.TARGET_URL }}" \
+            --arg status "$ZAP_STATUS" \
+            --arg report "$REPORT" \
+            --arg run_url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --argjson high "$HIGH" \
+            --argjson medium "$MEDIUM" \
+            --argjson low "$LOW" \
+            --argjson info "$INFO" \
+            --argjson total_alerts "$TOTAL_ALERTS" \
+            '{job: $job, timestamp: $timestamp, repo: $repo, repository: $repository, target: $target, status: $status, alerts_high: $high, alerts_medium: $medium, alerts_low: $low, alerts_info: $info, alerts_total: $total_alerts, breach_details: $report, run_url: $run_url}' \
+            > vapt-report.json
           if [ "$ZAP_STATUS" = "vulnerable" ] || [ "$ZAP_STATUS" = "error" ]; then exit 1; fi
+
+      - name: Upload VAPT Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vapt-report
+          path: vapt-report.json
 
   # ==========================================
   # JOB 2: STEP 5 - Benchmarking
@@ -608,6 +665,13 @@ jobs:
                   "run_url":              os.environ['RUN_URL']
               }
 
+              benchmark_report = dict(payload)
+              benchmark_report["job"] = "benchmarking_job"
+              benchmark_report["repository"] = os.environ.get("GITHUB_REPOSITORY", "")
+              benchmark_report["target"] = os.environ.get("TARGET_URL", "")
+              with open("benchmark-report.json", "w") as f:
+                  json.dump(benchmark_report, f, indent=2)
+
               print(f"Sending payload: {json.dumps(payload, indent=2)}", flush=True)
 
               url  = os.environ['WAZUH_INDEXER_URL'] + '/pipeline-audit/_doc/'
@@ -636,67 +700,6 @@ jobs:
               sys.exit(1)
 
           PYEOF
-      - name: Send Google Chat Alert on Failure
-        if: failure()
-        run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-          INCIDENT_ID="INC-${{ github.run_number }}"
-
-          ACTUAL_LAT=$(python3 -c "import json; d=json.load(open('result.json')); print(int(d['metrics']['http_req_duration']['p(95)']))" 2>/dev/null || echo 0)
-          ACTUAL_ERR=$(python3 -c "import json; d=json.load(open('result.json')); print(d['metrics']['http_req_failed']['value'])" 2>/dev/null || echo 0)
-          CHECK_FAILS=$(python3 -c "import json; d=json.load(open('result.json')); print(d['root_group']['checks']['status_is_correct']['fails'])" 2>/dev/null || echo 0)
-
-          LAT_LIMIT="${{ env.LATENCY_THRESHOLD }}"
-          ERR_LIMIT="${{ env.ERROR_RATE_LIMIT }}"
-          EXPECTED_ST="${{ env.EXPECTED_STATUS }}"
-
-          FAILURES=""
-          if (( ACTUAL_LAT > LAT_LIMIT )); then
-            FAILURES="${FAILURES}  • Latency: ${ACTUAL_LAT}ms observed (Limit: ${LAT_LIMIT}ms)"$'\n'"    Impact: Users are experiencing slow page loads, risking drop-off and SLA breach."$'\n'
-          fi
-          if (( $(echo "$ACTUAL_ERR > $ERR_LIMIT" | bc -l) )); then
-            FAILURES="${FAILURES}  • Error Rate: ${ACTUAL_ERR} observed (Limit: ${ERR_LIMIT})"$'\n'"    Impact: Server is returning failures; connections may be dropping or 5xx responses increasing."$'\n'
-          fi
-          if [ "$CHECK_FAILS" -gt 0 ]; then
-            FAILURES="${FAILURES}  • Status Code: ${CHECK_FAILS} requests returned unexpected status (Expected: ${EXPECTED_ST})"$'\n'"    Impact: Possible misconfiguration or regression in application logic."$'\n'
-          fi
-          if [ -z "$FAILURES" ]; then
-            FAILURES="  • Pipeline step failed. No metric data available — check runner logs for infrastructure issues."$'\n'
-          fi
-
-          MESSAGE=$(printf '*[CRITICAL] PIPELINE FAILURE DETECTED*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nIncident ID : %s\nTime        : %s\nRepository  : %s\nProduct ID  : %s\nTarget      : %s\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*FAILURE ANALYSIS*\n\n%s\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*ACTIONS*\n\nInvestigate : <%s|View GitHub Actions Run>\nAudit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback' \
-            "$INCIDENT_ID" \
-            "$TIMESTAMP" \
-            "${{ github.event.repository.name }}" \
-            "${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
-            "${{ env.TARGET_URL }}" \
-            "$FAILURES" \
-            "$RUN_URL")
-
-          jq -n --arg text "$MESSAGE" '{"text": $text}' | \
-            curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
-              -H "Content-Type: application/json" \
-              -d @-
-
-          exit 1
-
-      - name: Send Google Chat Pipeline Success Alert
-        if: success()
-        run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-          MESSAGE=$(printf '*[SUCCESS] PIPELINE COMPLETED SUCCESSFULLY*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTime       : %s\nRepository : %s\nRun Number : %s\nTarget     : %s\nService    : %s\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*RESULT*\nSecurity scan and benchmarking completed successfully.\n\nView Run   : <%s|Open GitHub Actions Run>' \
-            "$TIMESTAMP" \
-            "${{ github.event.repository.name }}" \
-            "${{ github.run_number }}" \
-            "${{ env.TARGET_URL }}" \
-            "${{ env.APP_SERVICE_NAME }}" \
-            "$RUN_URL")
-          jq -n --arg text "$MESSAGE" '{"text": $text}' | \
-            curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
-              -H "Content-Type: application/json" \
-              -d @-
 
       - name: Upload Benchmarking Logs
         if: always()
@@ -707,3 +710,153 @@ jobs:
             stress-results.txt
             result.json
             k6-test.js
+            benchmark-report.json
+
+  # ==========================================
+  # JOB 3: Final Workflow Notification
+  # ==========================================
+  notify_pipeline_result:
+    if: always()
+    needs:
+      - provision_monitoring
+      - security_vapt_job
+      - benchmarking_job
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Provision Report
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: provision-report
+          path: reports/provision
+
+      - name: Download VAPT Report
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: vapt-report
+          path: reports/vapt
+
+      - name: Download Benchmark Report
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: performance-logs
+          path: reports/benchmark
+
+      - name: Send Final Google Chat Pipeline Result
+        env:
+          PROVISION_JOB_RESULT: ${{ needs.provision_monitoring.result }}
+          VAPT_JOB_RESULT: ${{ needs.security_vapt_job.result }}
+          BENCHMARK_JOB_RESULT: ${{ needs.benchmarking_job.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.run_number }}
+          TARGET_URL: ${{ env.TARGET_URL }}
+          APP_SERVICE_NAME: ${{ env.APP_SERVICE_NAME }}
+          DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
+        run: |
+          python3 - <<'PYEOF' > final-message.txt
+          import json, os, datetime
+          from pathlib import Path
+
+          def load_json(path):
+              p = Path(path)
+              if not p.exists():
+                  return None
+              try:
+                  return json.loads(p.read_text())
+              except Exception:
+                  return None
+
+          provision = load_json("reports/provision/provision-report.json")
+          vapt = load_json("reports/vapt/vapt-report.json")
+          benchmark = load_json("reports/benchmark/benchmark-report.json")
+
+          provision_result = os.environ["PROVISION_JOB_RESULT"]
+          vapt_result = os.environ["VAPT_JOB_RESULT"]
+          benchmark_result = os.environ["BENCHMARK_JOB_RESULT"]
+          all_success = provision_result == vapt_result == benchmark_result == "success"
+          timestamp = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+
+          if all_success:
+              print(f"""*[SUCCESS] PIPELINE COMPLETED SUCCESSFULLY*
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          Time       : {timestamp}
+          Repository : {os.environ['REPO_NAME']}
+          Run Number : {os.environ['RUN_NUMBER']}
+          Target     : {os.environ['TARGET_URL']}
+          Service    : {os.environ['APP_SERVICE_NAME']}
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *RESULT*
+          Provisioning, security scan, and benchmarking completed successfully.
+
+          Job Statuses:
+            • Provisioning : {provision_result}
+            • VAPT        : {vapt_result}
+            • Benchmark   : {benchmark_result}
+
+          View Run   : <{os.environ['RUN_URL']}|Open GitHub Actions Run>""")
+          else:
+              failures = []
+              if provision_result != "success":
+                  if provision:
+                      failures.append(f"  • Provisioning: {provision_result} — runtime={provision.get('app_runtime', 'unknown')}, service={provision.get('app_service_name', 'unknown')}")
+                  else:
+                      failures.append(f"  • Provisioning: {provision_result} — report missing; check provisioning logs.")
+
+              if vapt_result != "success":
+                  if vapt:
+                      failures.append(
+                          f"  • VAPT: {vapt_result} — {vapt.get('breach_details', 'Security scan failed.')} "
+                          f"Counts: High={vapt.get('alerts_high', 0)}, Medium={vapt.get('alerts_medium', 0)}, Low={vapt.get('alerts_low', 0)}, Info={vapt.get('alerts_info', 0)}"
+                      )
+                  else:
+                      failures.append(f"  • VAPT: {vapt_result} — report missing; scan may have failed before analysis.")
+
+              if benchmark_result != "success":
+                  if benchmark:
+                      failures.append(f"  • Benchmark: {benchmark_result} — {benchmark.get('breach_details', 'Benchmark failed.')}")
+                      failures.append(
+                          f"    Metrics: latency={benchmark.get('latency_observed_ms', 0)}ms/{benchmark.get('latency_threshold_ms', os.environ.get('LATENCY_THRESHOLD', 'unknown'))}ms, "
+                          f"error_rate={benchmark.get('error_rate_observed', 0)}/{benchmark.get('error_rate_limit', 'unknown')}, "
+                          f"status_failures={benchmark.get('status_check_fails', 0)}, expected_status={benchmark.get('expected_status_code', 'unknown')}"
+                      )
+                  else:
+                      failures.append(f"  • Benchmark: {benchmark_result} — report missing; k6 or audit logging may have failed early.")
+
+              if not failures:
+                  failures.append("  • Pipeline failed. No detailed report artifacts were available; check runner logs.")
+
+              print(f"""*[CRITICAL] PIPELINE FAILURE DETECTED*
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          Incident ID : INC-{os.environ['RUN_NUMBER']}
+          Time        : {timestamp}
+          Repository  : {os.environ['REPO_NAME']}
+          Product ID  : {os.environ['DEFECTDOJO_PRODUCT_ID']}
+          Target      : {os.environ['TARGET_URL']}
+          Service     : {os.environ['APP_SERVICE_NAME']}
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *JOB STATUSES*
+            • Provisioning : {provision_result}
+            • VAPT        : {vapt_result}
+            • Benchmark   : {benchmark_result}
+
+          *FAILURE ANALYSIS*
+
+          {chr(10).join(failures)}
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *ACTIONS*
+
+          Investigate : <{os.environ['RUN_URL']}|View GitHub Actions Run>
+          Audit Hub   : <https://35.200.203.148|Wazuh Security Dashboard>
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          *NEXT STEPS:* Review logs  >  Identify root cause  >  Hotfix or rollback""")
+          PYEOF
+
+          MESSAGE=$(cat final-message.txt)
+          jq -n --arg text "$MESSAGE" '{"text": $text}' | \
+            curl -s -X POST "https://chat.googleapis.com/v1/${{ secrets.GCHAT_SPACE_ID }}" \
+              -H "Content-Type: application/json" \
+              -d @-
