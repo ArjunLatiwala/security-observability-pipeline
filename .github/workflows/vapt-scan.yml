@@ -69,7 +69,7 @@ env:
 
 
   # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
-  LATENCY_THRESHOLD: 10          # Fail: Real latency > 10ms (Set to 2000 for PROD)
+  LATENCY_THRESHOLD: 2000          # Fail: Real latency > 10ms (Set to 2000 for PROD)
   EXPECTED_STATUS: 200           # HTTP status code your app returns (typically 200 for GET)
   ERROR_RATE_LIMIT: 0.01       # Fail: Tiny threshold (Set to 0.01 for PROD)
 
@@ -574,19 +574,19 @@ jobs:
 
           # Run ab with connection reuse, reduced concurrency, and suppressed error spam
           # -k: Enable HTTP KeepAlive (reuse connections)
+          # -L: Follow redirects (important for 301/302/307 responses)
           # -n 500: Total requests
           # -c 3: Concurrent connections (reduced from 10 to avoid SSL exhaustion)
-          # 2>/dev/null: Suppress SSL error spam
-          ab -k -L -n 500 -c 3 "${{ env.TARGET_URL }}/" 2>/dev/null > stress-results.txt || true
+          echo "--- Running Apache Bench ---"
+          ab -k -L -n 500 -c 3 "${{ env.TARGET_URL }}/" > stress-results.txt 2>&1 || true
 
-          # Extract only summary metrics (suppress verbose error details)
+          # Always show the full output for debugging
+          echo "--- Apache Bench Output ---"
+          cat stress-results.txt
+
+          # Extract only summary metrics
+          echo "--- Summary Metrics ---"
           grep -E "Complete requests|Failed requests|Requests per second|Time per request|Transfer rate" stress-results.txt || echo "No summary metrics found"
-
-          # Show full ab output for debugging if there are failures
-          if grep -q "Failed requests:.*[1-9]" stress-results.txt; then
-            echo "--- Full Apache Bench output (debugging) ---"
-            cat stress-results.txt
-          fi
 
       - name: Run k6 Load Test
         id: k6_run
