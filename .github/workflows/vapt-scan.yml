@@ -573,7 +573,7 @@ jobs:
           # -n 500: Total requests
           # -c 3: Concurrent connections (reduced from 10 to avoid SSL exhaustion)
           # 2>/dev/null: Suppress SSL error spam
-          ab -k -n 500 -c 3 "${{ env.TARGET_URL }}/" 2>/dev/null > stress-results.txt || true
+          ab -k -l -n 500 -c 3 "${{ env.TARGET_URL }}/" 2>/dev/null > stress-results.txt || true
 
           # Extract only summary metrics (suppress verbose error details)
           grep -E "Complete requests|Failed requests|Requests per second|Time per request|Transfer rate" stress-results.txt || echo "No summary metrics found"
