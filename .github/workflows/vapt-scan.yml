@@ -40,6 +40,7 @@ env:
   TARGET_URL: 'https://husaintrivedi.site'
   TARGET_IP: '35.200.203.148'
   SSH_USER: 'husaintrivedi'
+  DASHBOARD_ENVIRONMENT: 'production'
 
   # --- APPLICATION RUNTIME CONFIGURATION ---
   # APP_RUNTIME controls which OpenTelemetry setup this workflow prepares on the server.
@@ -70,8 +71,7 @@ env:
 
   # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
   LATENCY_THRESHOLD: 2000          # Fail: Real latency > 10ms (Set to 2000 for PROD)
-  EXPECTED_STATUS: 200           # HTTP status code your app returns (typically 200 for GET)
-  # EXPECTED_STATUS: 307           # HTTP status code your app returns (307 = Temporary Redirect)
+  EXPECTED_STATUS: 200           # HTTP status code your app returns (307 = Temporary Redirect)
   ERROR_RATE_LIMIT: 0.01       # Fail: Tiny threshold (Set to 0.01 for PROD)
 
 jobs:
@@ -783,6 +783,7 @@ jobs:
           TARGET_IP: ${{ env.TARGET_IP }}
           APP_RUNTIME: ${{ env.APP_RUNTIME }}
           APP_SERVICE_NAME: ${{ env.APP_SERVICE_NAME }}
+          DASHBOARD_ENVIRONMENT: ${{ env.DASHBOARD_ENVIRONMENT }}
           GRAFANA_CLOUD_URL: ${{ env.GRAFANA_CLOUD_URL }}
           SENTRY_ORG: ${{ env.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ env.SENTRY_PROJECT }}
@@ -852,6 +853,7 @@ jobs:
               "overall_status": overall_status,
               "target_url": os.environ.get("TARGET_URL", ""),
               "target_ip": os.environ.get("TARGET_IP", ""),
+              "environment": os.environ.get("DASHBOARD_ENVIRONMENT", "production"),
               "app_runtime": os.environ.get("APP_RUNTIME", ""),
               "app_service_name": os.environ.get("APP_SERVICE_NAME", ""),
               "stages": [
