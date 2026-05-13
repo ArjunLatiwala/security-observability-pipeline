@@ -70,7 +70,7 @@ env:
 
   # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
   LATENCY_THRESHOLD: 2000          # Fail: Real latency > 10ms (Set to 2000 for PROD)
-  # EXPECTED_STATUS: 200           # HTTP status code your app returns (typically 200 for GET)
+  EXPECTED_STATUS: 200           # HTTP status code your app returns (typically 200 for GET)
   EXPECTED_STATUS: 307           # HTTP status code your app returns (307 = Temporary Redirect)
   ERROR_RATE_LIMIT: 0.01       # Fail: Tiny threshold (Set to 0.01 for PROD)
 
@@ -573,7 +573,7 @@ jobs:
           # -n 500: Total requests
           # -c 3: Concurrent connections (reduced from 10 to avoid SSL exhaustion)
           # 2>/dev/null: Suppress SSL error spam
-          ab -k -l -n 500 -c 3 "${{ env.TARGET_URL }}/" 2>/dev/null > stress-results.txt || true
+          ab -k -n 500 -c 3 "${{ env.TARGET_URL }}/" 2>/dev/null > stress-results.txt || true
 
           # Extract only summary metrics (suppress verbose error details)
           grep -E "Complete requests|Failed requests|Requests per second|Time per request|Transfer rate" stress-results.txt || echo "No summary metrics found"
@@ -761,6 +761,156 @@ jobs:
         with:
           name: performance-logs
           path: reports/benchmark
+
+      - name: Publish Central Dashboard Record to Wazuh
+        if: always()
+        env:
+          PROVISION_JOB_RESULT: ${{ needs.provision_monitoring.result }}
+          VAPT_JOB_RESULT: ${{ needs.security_vapt_job.result }}
+          BENCHMARK_JOB_RESULT: ${{ needs.benchmarking_job.result }}
+          WAZUH_INDEXER_URL: ${{ env.WAZUH_INDEXER_URL }}
+          WAZUH_INDEXER_PASSWORD: ${{ secrets.WAZUH_INDEXER_PASSWORD }}
+          DASHBOARD_INDEX: pipeline-dashboard-runs
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ARTIFACTS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts
+          REPOSITORY: ${{ github.repository }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          TARGET_URL: ${{ env.TARGET_URL }}
+          TARGET_IP: ${{ env.TARGET_IP }}
+          APP_RUNTIME: ${{ env.APP_RUNTIME }}
+          APP_SERVICE_NAME: ${{ env.APP_SERVICE_NAME }}
+          GRAFANA_CLOUD_URL: ${{ env.GRAFANA_CLOUD_URL }}
+          SENTRY_ORG: ${{ env.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ env.SENTRY_PROJECT }}
+          K6_PROJECT_ID: ${{ secrets.K6_PROJECT_ID }}
+        run: |
+          python3 - <<'PYEOF'
+          import base64, datetime, json, os, ssl, sys, traceback, urllib.request
+          from pathlib import Path
+
+          def load_json(path):
+              p = Path(path)
+              if not p.exists():
+                  return None
+              try:
+                  return json.loads(p.read_text())
+              except Exception:
+                  return None
+
+          def normalize_status(value):
+              value = str(value or "unknown").lower()
+              if value in {"success", "passed", "pass", "clean", "healthy"}:
+                  return "passed"
+              if value in {"failure", "failed", "fail", "error", "vulnerable"}:
+                  return "failed"
+              if value in {"warning", "partial", "blocked", "cancelled", "skipped"}:
+                  return "partial"
+              return "unknown"
+
+          def stage(name, status, summary, details=None):
+              return {"name": name, "status": normalize_status(status), "summary": summary, "details": details or {}}
+
+          def optional_url(value):
+              value = (value or "").strip()
+              return value if value else None
+
+          provision = load_json("reports/provision/provision-report.json") or {}
+          vapt = load_json("reports/vapt/vapt-report.json") or {}
+          benchmark = load_json("reports/benchmark/benchmark-report.json") or {}
+
+          provision_result = os.environ.get("PROVISION_JOB_RESULT", "unknown")
+          vapt_result = os.environ.get("VAPT_JOB_RESULT", "unknown")
+          benchmark_result = os.environ.get("BENCHMARK_JOB_RESULT", "unknown")
+          job_results = [provision_result, vapt_result, benchmark_result]
+          if all(result == "success" for result in job_results):
+              overall_status = "passed"
+          elif any(result == "failure" for result in job_results):
+              overall_status = "failed"
+          else:
+              overall_status = "partial"
+
+          sentry_project = os.environ.get("SENTRY_PROJECT", "")
+          sentry_org = os.environ.get("SENTRY_ORG", "")
+          sentry_url = f"https://sentry.io/organizations/{sentry_org}/projects/{sentry_project}/" if sentry_org and sentry_project else None
+          k6_project_id = os.environ.get("K6_PROJECT_ID", "")
+          k6_url = f"https://app.k6.io/projects/{k6_project_id}" if k6_project_id else None
+
+          payload = {
+              "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "pipeline_type": "enterprise-observability-security-benchmarking",
+              "repository": os.environ.get("REPOSITORY", ""),
+              "repo_name": os.environ.get("REPO_NAME", ""),
+              "branch": os.environ.get("BRANCH", ""),
+              "commit_sha": os.environ.get("COMMIT_SHA", ""),
+              "run_id": os.environ.get("RUN_ID", ""),
+              "run_number": os.environ.get("RUN_NUMBER", ""),
+              "run_url": os.environ.get("RUN_URL", ""),
+              "overall_status": overall_status,
+              "target_url": os.environ.get("TARGET_URL", ""),
+              "target_ip": os.environ.get("TARGET_IP", ""),
+              "app_runtime": os.environ.get("APP_RUNTIME", ""),
+              "app_service_name": os.environ.get("APP_SERVICE_NAME", ""),
+              "stages": [
+                  stage("provisioning_observability", provision_result, "Monitoring and observability provisioning job result.", provision),
+                  stage("vapt_zap", vapt.get("status", vapt_result), vapt.get("breach_details", "OWASP ZAP VAPT scan result."), vapt),
+                  stage("benchmarking_k6_ab", benchmark.get("status", benchmark_result), benchmark.get("breach_details", "k6 and Apache Bench performance result."), benchmark),
+                  stage("sentry_readiness", "unknown", "Sentry SDK readiness is checked during provisioning logs; no standalone artifact is currently emitted."),
+              ],
+              "metrics": {
+                  "latency_p95_ms": benchmark.get("latency_observed_ms"),
+                  "latency_threshold_ms": benchmark.get("latency_threshold_ms"),
+                  "error_rate": benchmark.get("error_rate_observed"),
+                  "error_rate_limit": benchmark.get("error_rate_limit"),
+                  "expected_status": benchmark.get("expected_status_code"),
+                  "status_check_fails": benchmark.get("status_check_fails"),
+                  "zap_high": vapt.get("alerts_high"),
+                  "zap_medium": vapt.get("alerts_medium"),
+                  "zap_low": vapt.get("alerts_low"),
+                  "zap_info": vapt.get("alerts_info"),
+                  "zap_total": vapt.get("alerts_total"),
+                  "sonar_quality_gate": None,
+              },
+              "links": {
+                  "github_actions": optional_url(os.environ.get("RUN_URL")),
+                  "artifacts": optional_url(os.environ.get("ARTIFACTS_URL")),
+                  "grafana": optional_url(os.environ.get("GRAFANA_CLOUD_URL")),
+                  "sentry": optional_url(sentry_url),
+                  "wazuh": optional_url(os.environ.get("WAZUH_INDEXER_URL")),
+                  "k6": optional_url(k6_url),
+                  "sonarqube": None,
+              },
+          }
+
+          Path("dashboard-run.json").write_text(json.dumps(payload, indent=2))
+
+          try:
+              url = f"{os.environ['WAZUH_INDEXER_URL'].rstrip('/')}/{os.environ['DASHBOARD_INDEX']}/_doc/"
+              auth = base64.b64encode(f"admin:{os.environ['WAZUH_INDEXER_PASSWORD']}".encode()).decode()
+              req = urllib.request.Request(
+                  url,
+                  data=json.dumps(payload).encode(),
+                  headers={"Content-Type": "application/json", "Authorization": f"Basic {auth}"},
+                  method="POST",
+              )
+              ctx = ssl._create_unverified_context()
+              with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                  print(f"Dashboard record indexed in {os.environ['DASHBOARD_INDEX']} with Wazuh response {resp.status}")
+          except Exception as exc:
+              print(f"Failed to publish dashboard record: {exc}")
+              traceback.print_exc()
+              sys.exit(1)
+          PYEOF
+
+      - name: Upload Central Dashboard Record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-dashboard-record
+          path: dashboard-run.json
 
       - name: Send Final Google Chat Pipeline Result
         env:
