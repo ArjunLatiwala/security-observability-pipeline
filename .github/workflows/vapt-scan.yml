@@ -37,7 +37,7 @@ on:
 
 env:
   # --- TARGET ENVIRONMENT CONFIGURATION ---
-  TARGET_URL: 'https://husaintrivedi.site'
+  TARGET_URL: 'https://bloggr.ai/'
   TARGET_IP: '35.200.203.148'
   SSH_USER: 'husaintrivedi'
 
@@ -246,8 +246,7 @@ jobs:
 
       - name: Configure Grafana Synthetic Monitoring Checks
         env:
-          GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
-          GRAFANA_INSTANCE_ID: ${{ secrets.GRAFANA_INSTANCE_ID }}
+          GRAFANA_SYNTHETIC_MONITORING_TOKEN: ${{ secrets.GRAFANA_SYNTHETIC_MONITORING_TOKEN }}
         run: |
           CHECK_NAME="${{ github.repository }}"
           TARGET_DOMAIN=$(echo "${{ env.TARGET_URL }}" | sed -E 's|https?://||' | sed 's|/.*||')
@@ -263,7 +262,7 @@ jobs:
           # Test API endpoint and get account info
           ACCOUNT_INFO=$(curl -s -w "\n%{http_code}" \
             "https://synthetic-monitoring-api.grafana.net/api/v1/check/list" \
-            -H "Authorization: Bearer $GRAFANA_API_KEY")
+            -H "Authorization: Bearer $GRAFANA_SYNTHETIC_MONITORING_TOKEN")
 
           ACCOUNT_CODE=$(echo "$ACCOUNT_INFO" | tail -n1)
           ACCOUNT_BODY=$(echo "$ACCOUNT_INFO" | sed '$d')
@@ -299,7 +298,7 @@ jobs:
           echo "Creating HTTP check..."
           HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             "https://synthetic-monitoring-api.grafana.net/api/v1/check/add" \
-            -H "Authorization: Bearer $GRAFANA_API_KEY" \
+            -H "Authorization: Bearer $GRAFANA_SYNTHETIC_MONITORING_TOKEN" \
             -H "Content-Type: application/json" \
             -d '{
               "job": "'"$CHECK_NAME"'-http",
@@ -337,7 +336,7 @@ jobs:
           echo "Creating PING check..."
           PING_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             "https://synthetic-monitoring-api.grafana.net/api/v1/check/add" \
-            -H "Authorization: Bearer $GRAFANA_API_KEY" \
+            -H "Authorization: Bearer $GRAFANA_SYNTHETIC_MONITORING_TOKEN" \
             -H "Content-Type: application/json" \
             -d '{
               "job": "'"$CHECK_NAME"'-ping",
@@ -372,7 +371,7 @@ jobs:
           echo "Creating DNS check..."
           DNS_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             "https://synthetic-monitoring-api.grafana.net/api/v1/check/add" \
-            -H "Authorization: Bearer $GRAFANA_API_KEY" \
+            -H "Authorization: Bearer $GRAFANA_SYNTHETIC_MONITORING_TOKEN" \
             -H "Content-Type: application/json" \
             -d '{
               "job": "'"$CHECK_NAME"'-dns",
@@ -410,7 +409,7 @@ jobs:
           echo "Creating TCP check..."
           TCP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             "https://synthetic-monitoring-api.grafana.net/api/v1/check/add" \
-            -H "Authorization: Bearer $GRAFANA_API_KEY" \
+            -H "Authorization: Bearer $GRAFANA_SYNTHETIC_MONITORING_TOKEN" \
             -H "Content-Type: application/json" \
             -d '{
               "job": "'"$CHECK_NAME"'-tcp",
