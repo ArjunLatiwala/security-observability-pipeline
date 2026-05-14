@@ -404,10 +404,12 @@ jobs:
               ]
             }")
           TCP_CODE=$(echo "$TCP_RESPONSE" | tail -n1)
+          TCP_BODY=$(echo "$TCP_RESPONSE" | sed '$d')
           if [ "$TCP_CODE" = "200" ] || [ "$TCP_CODE" = "201" ]; then
             echo "✅ TCP check created"
           else
             echo "⚠️ TCP check status $TCP_CODE"
+            echo "Response: $TCP_BODY"
           fi
 
           echo ""
