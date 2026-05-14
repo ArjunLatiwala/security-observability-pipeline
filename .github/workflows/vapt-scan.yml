@@ -37,7 +37,7 @@ on:
 
 env:
   # --- TARGET ENVIRONMENT CONFIGURATION ---
-  TARGET_URL: 'https://husaintrivedi.site'
+  TARGET_URL: 'https://bloggr.ai/'
   TARGET_IP: '35.200.203.148'
   SSH_USER: 'husaintrivedi'
 
@@ -243,6 +243,176 @@ jobs:
             sleep 3
             sudo systemctl status alloy --no-pager
           SSHEOF
+
+      - name: Configure Grafana Synthetic Monitoring Checks
+        env:
+          GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
+          GRAFANA_INSTANCE_ID: ${{ secrets.GRAFANA_INSTANCE_ID }}
+        run: |
+          CHECK_NAME="${{ github.repository }}"
+          TARGET_DOMAIN=$(echo "${{ env.TARGET_URL }}" | sed -E 's|https?://||' | sed 's|/.*||')
+
+          echo "--- Creating Grafana Synthetic Monitoring Checks ---"
+          echo "Check name: $CHECK_NAME"
+          echo "Target URL: ${{ env.TARGET_URL }}"
+          echo "Target domain: $TARGET_DOMAIN"
+          echo "Target IP: ${{ env.TARGET_IP }}"
+
+          # Probe IDs: 1=Atlanta, 4=Frankfurt, 6=Mumbai, 10=Sydney, 14=Tokyo
+          # Using 3 global probes for geographic coverage
+          PROBE_IDS="[1, 4, 6]"
+
+          # 1. HTTP Check - Core availability and response validation
+          echo "Creating HTTP check..."
+          HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://synthetic-monitoring-api.grafana.net/api/v1/checks" \
+            -H "Authorization: Bearer $GRAFANA_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "tenantId": '"$GRAFANA_INSTANCE_ID"',
+              "job": "'"$CHECK_NAME"'-http",
+              "target": "'"${{ env.TARGET_URL }}"'",
+              "frequency": 300000,
+              "timeout": 10000,
+              "enabled": true,
+              "probes": '"$PROBE_IDS"',
+              "labels": {
+                "repo": "'"${{ github.event.repository.name }}"'",
+                "type": "http",
+                "environment": "production"
+              },
+              "settings": {
+                "http": {
+                  "method": "GET",
+                  "validStatusCodes": ['"${{ env.EXPECTED_STATUS }}"'],
+                  "failIfSSLError": true,
+                  "failIfNotSSL": false,
+                  "ipVersion": "V4"
+                }
+              }
+            }')
+          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+          HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+            echo "✅ HTTP check created successfully"
+          else
+            echo "⚠️ HTTP check creation returned status $HTTP_CODE"
+            echo "$HTTP_BODY"
+          fi
+
+          # 2. PING Check - Network-level reachability
+          echo "Creating PING check..."
+          PING_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://synthetic-monitoring-api.grafana.net/api/v1/checks" \
+            -H "Authorization: Bearer $GRAFANA_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "tenantId": '"$GRAFANA_INSTANCE_ID"',
+              "job": "'"$CHECK_NAME"'-ping",
+              "target": "'"${{ env.TARGET_IP }}"'",
+              "frequency": 300000,
+              "timeout": 10000,
+              "enabled": true,
+              "probes": '"$PROBE_IDS"',
+              "labels": {
+                "repo": "'"${{ github.event.repository.name }}"'",
+                "type": "ping",
+                "environment": "production"
+              },
+              "settings": {
+                "ping": {
+                  "ipVersion": "V4",
+                  "dontFragment": false
+                }
+              }
+            }')
+          PING_CODE=$(echo "$PING_RESPONSE" | tail -n1)
+          PING_BODY=$(echo "$PING_RESPONSE" | sed '$d')
+          if [ "$PING_CODE" = "200" ] || [ "$PING_CODE" = "201" ]; then
+            echo "✅ PING check created successfully"
+          else
+            echo "⚠️ PING check creation returned status $PING_CODE"
+            echo "$PING_BODY"
+          fi
+
+          # 3. DNS Check - Domain resolution validation
+          echo "Creating DNS check..."
+          DNS_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://synthetic-monitoring-api.grafana.net/api/v1/checks" \
+            -H "Authorization: Bearer $GRAFANA_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "tenantId": '"$GRAFANA_INSTANCE_ID"',
+              "job": "'"$CHECK_NAME"'-dns",
+              "target": "'"$TARGET_DOMAIN"'",
+              "frequency": 300000,
+              "timeout": 10000,
+              "enabled": true,
+              "probes": '"$PROBE_IDS"',
+              "labels": {
+                "repo": "'"${{ github.event.repository.name }}"'",
+                "type": "dns",
+                "environment": "production"
+              },
+              "settings": {
+                "dns": {
+                  "recordType": "A",
+                  "server": "8.8.8.8",
+                  "ipVersion": "V4",
+                  "protocol": "UDP",
+                  "port": 53
+                }
+              }
+            }')
+          DNS_CODE=$(echo "$DNS_RESPONSE" | tail -n1)
+          DNS_BODY=$(echo "$DNS_RESPONSE" | sed '$d')
+          if [ "$DNS_CODE" = "200" ] || [ "$DNS_CODE" = "201" ]; then
+            echo "✅ DNS check created successfully"
+          else
+            echo "⚠️ DNS check creation returned status $DNS_CODE"
+            echo "$DNS_BODY"
+          fi
+
+          # 4. TCP Check - Port-level availability (HTTPS port 443)
+          echo "Creating TCP check..."
+          TCP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://synthetic-monitoring-api.grafana.net/api/v1/checks" \
+            -H "Authorization: Bearer $GRAFANA_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "tenantId": '"$GRAFANA_INSTANCE_ID"',
+              "job": "'"$CHECK_NAME"'-tcp",
+              "target": "'"${{ env.TARGET_IP }}:443"'",
+              "frequency": 300000,
+              "timeout": 10000,
+              "enabled": true,
+              "probes": '"$PROBE_IDS"',
+              "labels": {
+                "repo": "'"${{ github.event.repository.name }}"'",
+                "type": "tcp",
+                "environment": "production"
+              },
+              "settings": {
+                "tcp": {
+                  "ipVersion": "V4",
+                  "tls": true,
+                  "tlsConfig": {
+                    "insecureSkipVerify": false
+                  }
+                }
+              }
+            }')
+          TCP_CODE=$(echo "$TCP_RESPONSE" | tail -n1)
+          TCP_BODY=$(echo "$TCP_RESPONSE" | sed '$d')
+          if [ "$TCP_CODE" = "200" ] || [ "$TCP_CODE" = "201" ]; then
+            echo "✅ TCP check created successfully"
+          else
+            echo "⚠️ TCP check creation returned status $TCP_CODE"
+            echo "$TCP_BODY"
+          fi
+
+          echo "--- Synthetic Monitoring Checks Configuration Complete ---"
+          echo "View checks at: https://grafana.com/orgs/YOUR_ORG/synthetic-monitoring"
 
       - name: Configure OpenTelemetry Runtime
         run: |
