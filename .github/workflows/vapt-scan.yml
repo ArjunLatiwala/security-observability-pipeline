@@ -300,10 +300,12 @@ jobs:
               }
             }")
           HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
+          HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
           if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
             echo "✅ HTTP check created"
           else
             echo "⚠️ HTTP check status $HTTP_CODE"
+            echo "Response: $HTTP_BODY"
           fi
 
           # 2. PING Check
