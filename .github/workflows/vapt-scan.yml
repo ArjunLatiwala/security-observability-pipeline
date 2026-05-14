@@ -40,7 +40,6 @@ env:
   TARGET_URL: 'https://husaintrivedi.site'
   TARGET_IP: '35.200.203.148'
   SSH_USER: 'husaintrivedi'
-  DASHBOARD_ENVIRONMENT: 'production'
 
   # --- APPLICATION RUNTIME CONFIGURATION ---
   # APP_RUNTIME controls which OpenTelemetry setup this workflow prepares on the server.
@@ -513,6 +512,26 @@ jobs:
               \"breach_details\": \"$REPORT\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
+          if [ -f report_json.json ]; then
+            jq '[.site[]?.alerts[]?]
+              | sort_by((.riskcode | tonumber? // 0))
+              | reverse
+              | .[:15]
+              | map({
+                  severity: (.riskdesc // .risk // "Unknown"),
+                  riskcode: (.riskcode // ""),
+                  name: (.alert // .name // "Unknown finding"),
+                  url: (.instances[0].uri // .url // ""),
+                  method: (.instances[0].method // ""),
+                  evidence: (.instances[0].evidence // .evidence // ""),
+                  description: (.desc // ""),
+                  recommendation: (.solution // ""),
+                  cweid: (.cweid // ""),
+                  wascid: (.wascid // "")
+                })' report_json.json > zap-findings.json 2>/dev/null || echo '[]' > zap-findings.json
+          else
+            echo '[]' > zap-findings.json
+          fi
           jq -n \
             --arg job "security_vapt_job" \
             --arg timestamp "$TIMESTAMP" \
@@ -527,7 +546,8 @@ jobs:
             --argjson low "$LOW" \
             --argjson info "$INFO" \
             --argjson total_alerts "$TOTAL_ALERTS" \
-            '{job: $job, timestamp: $timestamp, repo: $repo, repository: $repository, target: $target, status: $status, alerts_high: $high, alerts_medium: $medium, alerts_low: $low, alerts_info: $info, alerts_total: $total_alerts, breach_details: $report, run_url: $run_url}' \
+            --slurpfile findings zap-findings.json \
+            '{job: $job, timestamp: $timestamp, repo: $repo, repository: $repository, target: $target, status: $status, alerts_high: $high, alerts_medium: $medium, alerts_low: $low, alerts_info: $info, alerts_total: $total_alerts, breach_details: $report, run_url: $run_url, findings: ($findings[0] // [])}' \
             > vapt-report.json
           if [ "$ZAP_STATUS" = "error" ]; then
             echo "ZAP did not produce a usable report, but keeping VAPT non-blocking so the dashboard can show the issue."
@@ -625,12 +645,13 @@ jobs:
           EXPECTED_STATUS: ${{ env.EXPECTED_STATUS }}
         run: |
           python3 - <<'PYEOF'
-          import json, os, datetime, urllib.request, ssl, base64, traceback, sys
+          import json, os, datetime, urllib.request, ssl, base64, traceback, sys, re
 
           try:
               result_path = 'result.json'
               print(f"result.json exists: {os.path.exists(result_path)}", flush=True)
 
+              k6_details = {"available": False, "checks": {}, "thresholds": {}, "metrics": {}}
               if os.path.exists(result_path):
                   with open(result_path) as f:
                       d = json.load(f)
@@ -649,6 +670,22 @@ jobs:
                   lat_limit   = int(os.environ['LATENCY_THRESHOLD'])
                   err_limit   = float(os.environ['ERROR_RATE_LIMIT'])
                   expected_st = os.environ['EXPECTED_STATUS']
+                  k6_details = {
+                      "available": True,
+                      "iterations": m.get("iterations", {}).get("count"),
+                      "latency_p95_ms": actual_lat,
+                      "latency_avg_ms": m.get("http_req_duration", {}).get("avg"),
+                      "latency_max_ms": m.get("http_req_duration", {}).get("max"),
+                      "error_rate": actual_err,
+                      "expected_status": int(expected_st),
+                      "status_check_fails": check_fails,
+                      "checks": r.get("checks", {}),
+                      "thresholds": {
+                          "latency": f"p(95)<{lat_limit}ms",
+                          "error_rate": f"rate<{err_limit}",
+                          "status_checks": "rate==1.0"
+                      }
+                  }
 
                   print(f"actual_lat={actual_lat}, actual_err={actual_err}, check_fails={check_fails}", flush=True)
 
@@ -671,6 +708,22 @@ jobs:
                   report      = "CRITICAL: No result.json found."
                   audit_status = "failure"
 
+              ab_metrics = {}
+              if os.path.exists('stress-results.txt'):
+                  text = open('stress-results.txt', errors='ignore').read()
+                  patterns = {
+                      "complete_requests": r"Complete requests:\s+([0-9.]+)",
+                      "failed_requests": r"Failed requests:\s+([0-9.]+)",
+                      "requests_per_second": r"Requests per second:\s+([0-9.]+)",
+                      "time_per_request_ms": r"Time per request:\s+([0-9.]+)\s+\[ms\] \(mean\)",
+                      "transfer_rate_kbps": r"Transfer rate:\s+([0-9.]+)"
+                  }
+                  for key, pattern in patterns.items():
+                      match = re.search(pattern, text)
+                      if match:
+                          value = float(match.group(1))
+                          ab_metrics[key] = int(value) if value.is_integer() else value
+
               payload = {
                   "timestamp":            datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
                   "event_type":           "PERFORMANCE_AUDIT",
@@ -685,6 +738,8 @@ jobs:
                   "expected_status_code": int(os.environ['EXPECTED_STATUS']),
                   "status_check_fails":   check_fails,
                   "breach_details":       report,
+                  "apache_bench":         ab_metrics,
+                  "k6":                   k6_details,
                   "run_url":              os.environ['RUN_URL']
               }
 
@@ -788,7 +843,6 @@ jobs:
           TARGET_IP: ${{ env.TARGET_IP }}
           APP_RUNTIME: ${{ env.APP_RUNTIME }}
           APP_SERVICE_NAME: ${{ env.APP_SERVICE_NAME }}
-          DASHBOARD_ENVIRONMENT: ${{ env.DASHBOARD_ENVIRONMENT }}
           GRAFANA_CLOUD_URL: ${{ env.GRAFANA_CLOUD_URL }}
           SENTRY_ORG: ${{ env.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ env.SENTRY_PROJECT }}
@@ -828,6 +882,39 @@ jobs:
           vapt = load_json("reports/vapt/vapt-report.json") or {}
           benchmark = load_json("reports/benchmark/benchmark-report.json") or {}
 
+          zap_counts = {
+              "high": vapt.get("alerts_high", 0),
+              "medium": vapt.get("alerts_medium", 0),
+              "low": vapt.get("alerts_low", 0),
+              "info": vapt.get("alerts_info", 0),
+              "total": vapt.get("alerts_total", 0),
+          }
+          security_details = {
+              "zap": {
+                  "status": normalize_status(vapt.get("status")),
+                  "summary": vapt.get("breach_details", "OWASP ZAP scan result not reported."),
+                  "target": vapt.get("target") or os.environ.get("TARGET_URL", ""),
+                  "counts": zap_counts,
+                  "findings": vapt.get("findings") or [],
+                  "run_url": vapt.get("run_url") or os.environ.get("RUN_URL", ""),
+              }
+          }
+          performance_details = {
+              "benchmark": {
+                  "status": normalize_status(benchmark.get("status")),
+                  "summary": benchmark.get("breach_details", "Benchmark result not reported."),
+                  "threshold": benchmark.get("threshold"),
+                  "latency_observed_ms": benchmark.get("latency_observed_ms"),
+                  "latency_threshold_ms": benchmark.get("latency_threshold_ms"),
+                  "error_rate_observed": benchmark.get("error_rate_observed"),
+                  "error_rate_limit": benchmark.get("error_rate_limit"),
+                  "expected_status_code": benchmark.get("expected_status_code"),
+                  "status_check_fails": benchmark.get("status_check_fails"),
+                  "apache_bench": benchmark.get("apache_bench") or {},
+                  "k6": benchmark.get("k6") or {},
+              }
+          }
+
           provision_result = os.environ.get("PROVISION_JOB_RESULT", "unknown")
           vapt_result = os.environ.get("VAPT_JOB_RESULT", "unknown")
           benchmark_result = os.environ.get("BENCHMARK_JOB_RESULT", "unknown")
@@ -844,6 +931,28 @@ jobs:
           sentry_url = f"https://sentry.io/organizations/{sentry_org}/projects/{sentry_project}/" if sentry_org and sentry_project else None
           k6_project_id = os.environ.get("K6_PROJECT_ID", "")
           k6_url = f"https://app.k6.io/projects/{k6_project_id}" if k6_project_id else None
+          grafana_url = optional_url(os.environ.get("GRAFANA_CLOUD_URL"))
+          observability_details = {
+              "grafana": {
+                  "status": normalize_status(provision_result),
+                  "summary": "Grafana Alloy, metrics, logs, and traces provisioning result.",
+                  "url": grafana_url,
+                  "alloy_configured": provision.get("grafana_alloy_configured"),
+                  "metrics_enabled": provision.get("metrics_enabled", True),
+                  "logs_enabled": provision.get("logs_enabled", True),
+                  "traces_enabled": provision.get("traces_enabled", True),
+                  "service": os.environ.get("APP_SERVICE_NAME", ""),
+              },
+              "sentry": {
+                  "status": "unknown",
+                  "summary": "Sentry SDK readiness is checked during provisioning; issue details require server-side Sentry API enrichment.",
+                  "url": sentry_url,
+                  "org": sentry_org,
+                  "project": sentry_project,
+                  "sdk_check_executed": provision.get("sentry_sdk_check_executed"),
+                  "issues": [],
+              }
+          }
 
           payload = {
               "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -858,7 +967,6 @@ jobs:
               "overall_status": overall_status,
               "target_url": os.environ.get("TARGET_URL", ""),
               "target_ip": os.environ.get("TARGET_IP", ""),
-              "environment": os.environ.get("DASHBOARD_ENVIRONMENT", "production"),
               "app_runtime": os.environ.get("APP_RUNTIME", ""),
               "app_service_name": os.environ.get("APP_SERVICE_NAME", ""),
               "stages": [
@@ -881,10 +989,13 @@ jobs:
                   "zap_total": vapt.get("alerts_total"),
                   "sonar_quality_gate": None,
               },
+              "security": security_details,
+              "performance": performance_details,
+              "observability": observability_details,
               "links": {
                   "github_actions": optional_url(os.environ.get("RUN_URL")),
                   "artifacts": optional_url(os.environ.get("ARTIFACTS_URL")),
-                  "grafana": optional_url(os.environ.get("GRAFANA_CLOUD_URL")),
+                  "grafana": grafana_url,
                   "sentry": optional_url(sentry_url),
                   "wazuh": optional_url(os.environ.get("WAZUH_INDEXER_URL")),
                   "k6": optional_url(k6_url),
