@@ -37,7 +37,7 @@ on:
 
 env:
   # --- TARGET ENVIRONMENT CONFIGURATION ---
-  TARGET_URL: 'https://husaintrivedi.site'
+  TARGET_URL: 'https://bloggr.ai/'
   TARGET_IP: '35.200.203.148'
   SSH_USER: 'husaintrivedi'
 
