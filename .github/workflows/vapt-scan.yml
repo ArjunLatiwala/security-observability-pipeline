@@ -37,7 +37,7 @@ on:
 
 env:
   # --- TARGET ENVIRONMENT CONFIGURATION ---
-  TARGET_URL: 'https://bloggr.ai/'
+  TARGET_URL: 'https://husaintrivedi.site'
   TARGET_IP: '35.200.203.148'
   SSH_USER: 'husaintrivedi'
 
@@ -70,6 +70,7 @@ env:
 
   # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
   LATENCY_THRESHOLD: 2000          # Fail: Real latency > 10ms (Set to 2000 for PROD)
+  EXPECTED_STATUS: 200           # HTTP status code your app returns (typically 200 for GET)
   EXPECTED_STATUS: 307           # HTTP status code your app returns (307 = Temporary Redirect)
   ERROR_RATE_LIMIT: 0.01       # Fail: Tiny threshold (Set to 0.01 for PROD)
 
@@ -119,6 +120,100 @@ jobs:
           echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ env.TARGET_IP }} >> ~/.ssh/known_hosts
+
+      - name: Preflight Server Validation
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          GRAFANA_PROMETHEUS_URL: ${{ secrets.GRAFANA_PROMETHEUS_URL }}
+          GRAFANA_INSTANCE_ID: ${{ secrets.GRAFANA_INSTANCE_ID }}
+          GRAFANA_LOKI_URL: ${{ secrets.GRAFANA_LOKI_URL }}
+          GRAFANA_LOKI_USER: ${{ secrets.GRAFANA_LOKI_USER }}
+          GRAFANA_TEMPO_URL: ${{ secrets.GRAFANA_TEMPO_URL }}
+          GRAFANA_TEMPO_USER: ${{ secrets.GRAFANA_TEMPO_USER }}
+          GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
+          K6_CLOUD_TOKEN: ${{ secrets.K6_CLOUD_TOKEN }}
+          K6_PROJECT_ID: ${{ secrets.K6_PROJECT_ID }}
+          WAZUH_INDEXER_PASSWORD: ${{ secrets.WAZUH_INDEXER_PASSWORD }}
+          DEFECTDOJO_PRODUCT_ID: ${{ secrets.DEFECTDOJO_PRODUCT_ID }}
+        run: |
+          set -e
+          echo "--- Validating required configuration ---"
+          for value_name in TARGET_URL TARGET_IP SSH_USER APP_RUNTIME WAZUH_INDEXER_URL WAZUH_MANAGER_URL; do
+            if [ -z "${!value_name}" ]; then
+              echo "❌ $value_name is not configured"
+              exit 1
+            fi
+          done
+          for secret_name in SERVER_SSH_KEY GRAFANA_PROMETHEUS_URL GRAFANA_INSTANCE_ID GRAFANA_LOKI_URL GRAFANA_LOKI_USER GRAFANA_TEMPO_URL GRAFANA_TEMPO_USER GRAFANA_API_KEY K6_CLOUD_TOKEN K6_PROJECT_ID WAZUH_INDEXER_PASSWORD DEFECTDOJO_PRODUCT_ID; do
+            if [ -z "${!secret_name}" ]; then
+              echo "❌ $secret_name secret is not configured"
+              exit 1
+            fi
+          done
+
+          echo "--- Checking TARGET_URL reachability ---"
+          TARGET_STATUS=$(curl -s -k -o /dev/null -w "%{http_code}" "${{ env.TARGET_URL }}/" || true)
+          if ! printf '%s' "$TARGET_STATUS" | grep -qE '^[23]'; then
+            echo "❌ TARGET_URL did not return a 2xx/3xx response: $TARGET_STATUS"
+            exit 1
+          fi
+          echo "✅ TARGET_URL reachable with HTTP $TARGET_STATUS"
+
+          ssh -o BatchMode=yes -o ConnectTimeout=15 ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
+            set -e
+            echo "--- Checking SSH, sudo, OS, package manager, and app config ---"
+            echo "✅ SSH connection successful"
+            sudo -n true
+            echo "✅ Passwordless sudo available"
+
+            if [ ! -r /etc/os-release ]; then
+              echo "❌ /etc/os-release not found; cannot detect OS family"
+              exit 1
+            fi
+            . /etc/os-release
+            OS_ID="${ID:-unknown}"
+            OS_LIKE="${ID_LIKE:-}"
+            echo "Detected OS: ${PRETTY_NAME:-$OS_ID}"
+
+            case "$OS_ID $OS_LIKE" in
+              *ubuntu*|*debian*)
+                command -v apt-get >/dev/null 2>&1 || { echo "❌ apt-get not found for Debian/Ubuntu OS"; exit 1; }
+                echo "✅ Package manager: apt-get"
+                ;;
+              *amzn*|*amazon*|*rhel*|*centos*|*fedora*|*rocky*|*almalinux*)
+                if command -v dnf >/dev/null 2>&1; then
+                  echo "✅ Package manager: dnf"
+                elif command -v yum >/dev/null 2>&1; then
+                  echo "✅ Package manager: yum"
+                else
+                  echo "❌ dnf/yum not found for RPM-family OS"
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "❌ Unsupported OS family: ${PRETTY_NAME:-$OS_ID}. Supported: Ubuntu, Debian, Amazon Linux, RHEL, CentOS, Rocky, AlmaLinux, Fedora."
+                exit 1
+                ;;
+            esac
+
+            if [ -n "${{ env.APP_WORKING_DIR }}" ]; then
+              [ -d "${{ env.APP_WORKING_DIR }}" ] || { echo "❌ APP_WORKING_DIR not found: ${{ env.APP_WORKING_DIR }}"; exit 1; }
+              echo "✅ APP_WORKING_DIR exists"
+            fi
+
+            if [ -z "${{ env.APP_RESTART_COMMAND }}" ] && [ -n "${{ env.APP_START_COMMAND }}" ]; then
+              [ -n "${{ env.APP_WORKING_DIR }}" ] || { echo "❌ APP_WORKING_DIR is required when APP_START_COMMAND is set"; exit 1; }
+              cd "${{ env.APP_WORKING_DIR }}"
+              START_BIN=$(printf '%s\n' "${{ env.APP_START_COMMAND }}" | awk '{print $1}')
+              if [ ! -x "$START_BIN" ] && ! command -v "$START_BIN" >/dev/null 2>&1; then
+                echo "❌ APP_START_COMMAND executable not found: $START_BIN"
+                exit 1
+              fi
+              echo "✅ APP_START_COMMAND executable is available"
+            fi
+
+            echo "✅ Preflight server validation completed"
+          SSHEOF
 
       - name: Configure Grafana Alloy Collector
         env:
@@ -232,10 +327,29 @@ jobs:
           ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
             echo "--- Configuring Grafana Alloy Collector ---"
             if ! command -v alloy &> /dev/null; then
-              sudo mkdir -p /etc/apt/keyrings/
-              curl -fsSL https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null
-              echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
-              sudo apt-get update && sudo apt-get install -y alloy
+              . /etc/os-release
+              case "${ID:-} ${ID_LIKE:-}" in
+                *ubuntu*|*debian*)
+                  sudo mkdir -p /etc/apt/keyrings/
+                  curl -fsSL https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null
+                  echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+                  sudo apt-get update && sudo apt-get install -y alloy
+                  ;;
+                *amzn*|*amazon*|*rhel*|*centos*|*fedora*|*rocky*|*almalinux*)
+                  if command -v dnf >/dev/null 2>&1; then
+                    sudo dnf install -y https://github.com/grafana/alloy/releases/latest/download/alloy-linux-amd64.rpm
+                  elif command -v yum >/dev/null 2>&1; then
+                    sudo yum install -y https://github.com/grafana/alloy/releases/latest/download/alloy-linux-amd64.rpm
+                  else
+                    echo "❌ dnf/yum not found for RPM-family OS"
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  echo "❌ Unsupported OS family for Alloy installation: ${PRETTY_NAME:-${ID:-unknown}}"
+                  exit 1
+                  ;;
+              esac
             fi
             sudo cp /tmp/config.alloy /etc/alloy/config.alloy
             sudo systemctl enable alloy
@@ -243,209 +357,6 @@ jobs:
             sleep 3
             sudo systemctl status alloy --no-pager
           SSHEOF
-
-      - name: Configure Grafana Synthetic Monitoring Checks
-        env:
-          GRAFANA_SYNTHETIC_MONITORING_TOKEN: ${{ secrets.GRAFANA_SYNTHETIC_MONITORING_TOKEN }}
-        run: |
-          CHECK_NAME="${{ github.repository }}"
-          TARGET_DOMAIN=$(echo "${{ env.TARGET_URL }}" | sed -E 's|https?://||' | sed 's|/.*||')
-
-          echo "--- Grafana Synthetic Monitoring Setup ---"
-          echo "Check name: $CHECK_NAME"
-          echo "Target URL: ${{ env.TARGET_URL }}"
-          echo "Target domain: $TARGET_DOMAIN"
-          echo "Target IP: ${{ env.TARGET_IP }}"
-          echo ""
-          echo "Testing API connectivity..."
-
-          # Test API endpoint and get account info
-          ACCOUNT_INFO=$(curl -s -w "\n%{http_code}" \
-            "https://synthetic-monitoring-api.grafana.net/api/v1/check/list" \
-            -H "Authorization: Bearer $GRAFANA_SYNTHETIC_MONITORING_TOKEN")
-
-          ACCOUNT_CODE=$(echo "$ACCOUNT_INFO" | tail -n1)
-          ACCOUNT_BODY=$(echo "$ACCOUNT_INFO" | sed '$d')
-
-          if [ "$ACCOUNT_CODE" = "200" ]; then
-            echo "✅ Synthetic Monitoring API accessible"
-            echo "Existing checks: $(echo "$ACCOUNT_BODY" | jq -r 'length // 0' 2>/dev/null || echo 'unknown')"
-          else
-            echo "❌ Synthetic Monitoring API returned status $ACCOUNT_CODE"
-            echo "Response: $ACCOUNT_BODY"
-            echo ""
-            echo "Possible issues:"
-            echo "1. GRAFANA_API_KEY doesn't have Synthetic Monitoring permissions"
-            echo "2. Synthetic Monitoring not enabled for this Grafana Cloud stack"
-            echo "3. Wrong API endpoint or authentication format"
-            echo ""
-            echo "To fix:"
-            echo "- Go to Grafana Cloud → Configuration → API Keys"
-            echo "- Create a new API key with 'MetricsPublisher' role (includes Synthetic Monitoring)"
-            echo "- Or enable Synthetic Monitoring: Grafana Cloud → Testing & Synthetics → Synthetic Monitoring"
-            echo ""
-            echo "Skipping synthetic monitoring check creation..."
-            exit 0
-          fi
-
-          echo ""
-          echo "--- Creating Synthetic Monitoring Checks ---"
-
-          # Probe IDs: 1=Atlanta, 4=Frankfurt, 6=Mumbai, 10=Sydney, 14=Tokyo
-          PROBE_IDS="[1, 4, 6]"
-
-          # 1. HTTP Check
-          echo "Creating HTTP check..."
-          HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://synthetic-monitoring-api.grafana.net/api/v1/check/add" \
-            -H "Authorization: Bearer $GRAFANA_SYNTHETIC_MONITORING_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "job": "'"$CHECK_NAME"'-http",
-              "target": "'"${{ env.TARGET_URL }}"'",
-              "frequency": 300000,
-              "timeout": 10000,
-              "enabled": true,
-              "probes": '"$PROBE_IDS"',
-              "labels": {
-                "repo": "'"${{ github.event.repository.name }}"'",
-                "type": "http",
-                "environment": "production"
-              },
-              "settings": {
-                "http": {
-                  "method": "GET",
-                  "validStatusCodes": ['"${{ env.EXPECTED_STATUS }}"'],
-                  "failIfSSLError": true,
-                  "failIfNotSSL": false,
-                  "ipVersion": "V4"
-                }
-              }
-            }')
-          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
-          HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
-          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-            echo "✅ HTTP check created"
-          elif echo "$HTTP_BODY" | grep -q "already exists"; then
-            echo "ℹ️ HTTP check already exists"
-          else
-            echo "⚠️ HTTP check status $HTTP_CODE: $HTTP_BODY"
-          fi
-
-          # 2. PING Check
-          echo "Creating PING check..."
-          PING_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://synthetic-monitoring-api.grafana.net/api/v1/check/add" \
-            -H "Authorization: Bearer $GRAFANA_SYNTHETIC_MONITORING_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "job": "'"$CHECK_NAME"'-ping",
-              "target": "'"${{ env.TARGET_IP }}"'",
-              "frequency": 300000,
-              "timeout": 10000,
-              "enabled": true,
-              "probes": '"$PROBE_IDS"',
-              "labels": {
-                "repo": "'"${{ github.event.repository.name }}"'",
-                "type": "ping",
-                "environment": "production"
-              },
-              "settings": {
-                "ping": {
-                  "ipVersion": "V4",
-                  "dontFragment": false
-                }
-              }
-            }')
-          PING_CODE=$(echo "$PING_RESPONSE" | tail -n1)
-          PING_BODY=$(echo "$PING_RESPONSE" | sed '$d')
-          if [ "$PING_CODE" = "200" ] || [ "$PING_CODE" = "201" ]; then
-            echo "✅ PING check created"
-          elif echo "$PING_BODY" | grep -q "already exists"; then
-            echo "ℹ️ PING check already exists"
-          else
-            echo "⚠️ PING check status $PING_CODE: $PING_BODY"
-          fi
-
-          # 3. DNS Check
-          echo "Creating DNS check..."
-          DNS_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://synthetic-monitoring-api.grafana.net/api/v1/check/add" \
-            -H "Authorization: Bearer $GRAFANA_SYNTHETIC_MONITORING_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "job": "'"$CHECK_NAME"'-dns",
-              "target": "'"$TARGET_DOMAIN"'",
-              "frequency": 300000,
-              "timeout": 10000,
-              "enabled": true,
-              "probes": '"$PROBE_IDS"',
-              "labels": {
-                "repo": "'"${{ github.event.repository.name }}"'",
-                "type": "dns",
-                "environment": "production"
-              },
-              "settings": {
-                "dns": {
-                  "recordType": "A",
-                  "server": "8.8.8.8",
-                  "ipVersion": "V4",
-                  "protocol": "UDP",
-                  "port": 53
-                }
-              }
-            }')
-          DNS_CODE=$(echo "$DNS_RESPONSE" | tail -n1)
-          DNS_BODY=$(echo "$DNS_RESPONSE" | sed '$d')
-          if [ "$DNS_CODE" = "200" ] || [ "$DNS_CODE" = "201" ]; then
-            echo "✅ DNS check created"
-          elif echo "$DNS_BODY" | grep -q "already exists"; then
-            echo "ℹ️ DNS check already exists"
-          else
-            echo "⚠️ DNS check status $DNS_CODE: $DNS_BODY"
-          fi
-
-          # 4. TCP Check
-          echo "Creating TCP check..."
-          TCP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://synthetic-monitoring-api.grafana.net/api/v1/check/add" \
-            -H "Authorization: Bearer $GRAFANA_SYNTHETIC_MONITORING_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "job": "'"$CHECK_NAME"'-tcp",
-              "target": "'"${{ env.TARGET_IP }}:443"'",
-              "frequency": 300000,
-              "timeout": 10000,
-              "enabled": true,
-              "probes": '"$PROBE_IDS"',
-              "labels": {
-                "repo": "'"${{ github.event.repository.name }}"'",
-                "type": "tcp",
-                "environment": "production"
-              },
-              "settings": {
-                "tcp": {
-                  "ipVersion": "V4",
-                  "tls": true,
-                  "tlsConfig": {
-                    "insecureSkipVerify": false
-                  }
-                }
-              }
-            }')
-          TCP_CODE=$(echo "$TCP_RESPONSE" | tail -n1)
-          TCP_BODY=$(echo "$TCP_RESPONSE" | sed '$d')
-          if [ "$TCP_CODE" = "200" ] || [ "$TCP_CODE" = "201" ]; then
-            echo "✅ TCP check created"
-          elif echo "$TCP_BODY" | grep -q "already exists"; then
-            echo "ℹ️ TCP check already exists"
-          else
-            echo "⚠️ TCP check status $TCP_CODE: $TCP_BODY"
-          fi
-
-          echo ""
-          echo "--- Synthetic Monitoring Setup Complete ---"
-          echo "View checks: Grafana Cloud → Testing & Synthetics → Synthetic Monitoring"
 
       - name: Configure OpenTelemetry Runtime
         run: |
@@ -465,8 +376,27 @@ jobs:
             case "${{ env.APP_RUNTIME }}" in
               node)
                 if ! command -v node &> /dev/null; then
-                  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-                  sudo apt-get install -y nodejs
+                  . /etc/os-release
+                  case "${ID:-} ${ID_LIKE:-}" in
+                    *ubuntu*|*debian*)
+                      curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+                      sudo apt-get install -y nodejs
+                      ;;
+                    *amzn*|*amazon*|*rhel*|*centos*|*fedora*|*rocky*|*almalinux*)
+                      if command -v dnf >/dev/null 2>&1; then
+                        sudo dnf install -y nodejs npm
+                      elif command -v yum >/dev/null 2>&1; then
+                        sudo yum install -y nodejs npm
+                      else
+                        echo "❌ dnf/yum not found for RPM-family OS"
+                        exit 1
+                      fi
+                      ;;
+                    *)
+                      echo "❌ Unsupported OS family for Node.js installation: ${PRETTY_NAME:-${ID:-unknown}}"
+                      exit 1
+                      ;;
+                  esac
                 fi
                 unset NODE_OPTIONS
                 if ! node -e "require('@opentelemetry/auto-instrumentations-node')" 2>/dev/null; then
@@ -489,10 +419,27 @@ jobs:
                 echo "NODE_PATH=${GLOBAL_NODE_MODULES}" | sudo tee -a /etc/environment
                 ;;
               python)
-                if ! command -v python3 &> /dev/null; then
-                  sudo apt-get update && sudo apt-get install -y python3 python3-pip python3-venv
-                elif ! python3 -m pip --version &> /dev/null; then
-                  sudo apt-get update && sudo apt-get install -y python3-pip python3-venv
+                if ! command -v python3 &> /dev/null || ! python3 -m pip --version &> /dev/null; then
+                  . /etc/os-release
+                  case "${ID:-} ${ID_LIKE:-}" in
+                    *ubuntu*|*debian*)
+                      sudo apt-get update && sudo apt-get install -y python3 python3-pip python3-venv
+                      ;;
+                    *amzn*|*amazon*|*rhel*|*centos*|*fedora*|*rocky*|*almalinux*)
+                      if command -v dnf >/dev/null 2>&1; then
+                        sudo dnf install -y python3 python3-pip
+                      elif command -v yum >/dev/null 2>&1; then
+                        sudo yum install -y python3 python3-pip
+                      else
+                        echo "❌ dnf/yum not found for RPM-family OS"
+                        exit 1
+                      fi
+                      ;;
+                    *)
+                      echo "❌ Unsupported OS family for Python installation: ${PRETTY_NAME:-${ID:-unknown}}"
+                      exit 1
+                      ;;
+                  esac
                 fi
                 echo "OTEL_METRICS_EXPORTER=none" | sudo tee -a /etc/environment
                 echo "OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=aws_lambda" | sudo tee -a /etc/environment
@@ -666,7 +613,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: OWASP ZAP Full Scan
-        continue-on-error: true
         uses: zaproxy/action-full-scan@v0.12.0
         with:
           target: ${{ env.TARGET_URL }}
@@ -689,11 +635,11 @@ jobs:
             TOTAL_ALERTS=$(jq '[.site[]?.alerts[]?] | length' report_json.json 2>/dev/null || echo 0)
 
             if [ "$TOTAL_ALERTS" -lt 2 ]; then
-              ZAP_STATUS="blocked"; REPORT="PASS: ZAP attack traffic appears blocked by the firewall/WAF. Protection is working."
+              ZAP_STATUS="blocked"; REPORT="WARNING: Site may be protected by WAF."
             elif [ "$HIGH" -gt 0 ]; then
-              ZAP_STATUS="vulnerable"; REPORT="SECURITY FINDINGS RECORDED: ${HIGH} High, ${MEDIUM} Medium, ${LOW} Low, ${INFO} Informational. Findings are logged for dashboard review without failing the VAPT job."
+              ZAP_STATUS="vulnerable"; REPORT="CRITICAL VULNERABILITIES FOUND: ${HIGH} High, ${MEDIUM} Medium, ${LOW} Low, ${INFO} Informational."
             elif [ "$MEDIUM" -gt 0 ]; then
-              ZAP_STATUS="warning"; REPORT="SECURITY FINDINGS RECORDED: ${MEDIUM} Medium, ${LOW} Low, ${INFO} Informational. Review within SLA; VAPT job remains non-blocking."
+              ZAP_STATUS="warning"; REPORT="MEDIUM VULNERABILITIES FOUND: ${MEDIUM} Medium, ${LOW} Low, ${INFO} Informational. Review within SLA."
             else
               ZAP_STATUS="clean"; REPORT="PASS: No High/Medium vulnerabilities detected. ${LOW} Low, ${INFO} Informational findings logged."
             fi
@@ -715,26 +661,6 @@ jobs:
               \"breach_details\": \"$REPORT\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
             }"
-          if [ -f report_json.json ]; then
-            jq '[.site[]?.alerts[]?]
-              | sort_by((.riskcode | tonumber? // 0))
-              | reverse
-              | .[:15]
-              | map({
-                  severity: (.riskdesc // .risk // "Unknown"),
-                  riskcode: (.riskcode // ""),
-                  name: (.alert // .name // "Unknown finding"),
-                  url: (.instances[0].uri // .url // ""),
-                  method: (.instances[0].method // ""),
-                  evidence: (.instances[0].evidence // .evidence // ""),
-                  description: (.desc // ""),
-                  recommendation: (.solution // ""),
-                  cweid: (.cweid // ""),
-                  wascid: (.wascid // "")
-                })' report_json.json > zap-findings.json 2>/dev/null || echo '[]' > zap-findings.json
-          else
-            echo '[]' > zap-findings.json
-          fi
           jq -n \
             --arg job "security_vapt_job" \
             --arg timestamp "$TIMESTAMP" \
@@ -749,14 +675,9 @@ jobs:
             --argjson low "$LOW" \
             --argjson info "$INFO" \
             --argjson total_alerts "$TOTAL_ALERTS" \
-            --slurpfile findings zap-findings.json \
-            '{job: $job, timestamp: $timestamp, repo: $repo, repository: $repository, target: $target, status: $status, alerts_high: $high, alerts_medium: $medium, alerts_low: $low, alerts_info: $info, alerts_total: $total_alerts, breach_details: $report, run_url: $run_url, findings: ($findings[0] // [])}' \
+            '{job: $job, timestamp: $timestamp, repo: $repo, repository: $repository, target: $target, status: $status, alerts_high: $high, alerts_medium: $medium, alerts_low: $low, alerts_info: $info, alerts_total: $total_alerts, breach_details: $report, run_url: $run_url}' \
             > vapt-report.json
-          if [ "$ZAP_STATUS" = "error" ]; then
-            echo "ZAP did not produce a usable report, but keeping VAPT non-blocking so the dashboard can show the issue."
-          elif [ "$ZAP_STATUS" = "vulnerable" ] || [ "$ZAP_STATUS" = "warning" ] || [ "$ZAP_STATUS" = "blocked" ]; then
-            echo "ZAP result recorded as security evidence; VAPT job remains passed because detected/blocked attack traffic validates protection behavior."
-          fi
+          if [ "$ZAP_STATUS" = "vulnerable" ] || [ "$ZAP_STATUS" = "error" ]; then exit 1; fi
 
       - name: Upload VAPT Report
         if: always()
@@ -848,13 +769,12 @@ jobs:
           EXPECTED_STATUS: ${{ env.EXPECTED_STATUS }}
         run: |
           python3 - <<'PYEOF'
-          import json, os, datetime, urllib.request, ssl, base64, traceback, sys, re
+          import json, os, datetime, urllib.request, ssl, base64, traceback, sys
 
           try:
               result_path = 'result.json'
               print(f"result.json exists: {os.path.exists(result_path)}", flush=True)
 
-              k6_details = {"available": False, "checks": {}, "thresholds": {}, "metrics": {}}
               if os.path.exists(result_path):
                   with open(result_path) as f:
                       d = json.load(f)
@@ -873,22 +793,6 @@ jobs:
                   lat_limit   = int(os.environ['LATENCY_THRESHOLD'])
                   err_limit   = float(os.environ['ERROR_RATE_LIMIT'])
                   expected_st = os.environ['EXPECTED_STATUS']
-                  k6_details = {
-                      "available": True,
-                      "iterations": m.get("iterations", {}).get("count"),
-                      "latency_p95_ms": actual_lat,
-                      "latency_avg_ms": m.get("http_req_duration", {}).get("avg"),
-                      "latency_max_ms": m.get("http_req_duration", {}).get("max"),
-                      "error_rate": actual_err,
-                      "expected_status": int(expected_st),
-                      "status_check_fails": check_fails,
-                      "checks": r.get("checks", {}),
-                      "thresholds": {
-                          "latency": f"p(95)<{lat_limit}ms",
-                          "error_rate": f"rate<{err_limit}",
-                          "status_checks": "rate==1.0"
-                      }
-                  }
 
                   print(f"actual_lat={actual_lat}, actual_err={actual_err}, check_fails={check_fails}", flush=True)
 
@@ -911,22 +815,6 @@ jobs:
                   report      = "CRITICAL: No result.json found."
                   audit_status = "failure"
 
-              ab_metrics = {}
-              if os.path.exists('stress-results.txt'):
-                  text = open('stress-results.txt', errors='ignore').read()
-                  patterns = {
-                      "complete_requests": r"Complete requests:\s+([0-9.]+)",
-                      "failed_requests": r"Failed requests:\s+([0-9.]+)",
-                      "requests_per_second": r"Requests per second:\s+([0-9.]+)",
-                      "time_per_request_ms": r"Time per request:\s+([0-9.]+)\s+\[ms\] \(mean\)",
-                      "transfer_rate_kbps": r"Transfer rate:\s+([0-9.]+)"
-                  }
-                  for key, pattern in patterns.items():
-                      match = re.search(pattern, text)
-                      if match:
-                          value = float(match.group(1))
-                          ab_metrics[key] = int(value) if value.is_integer() else value
-
               payload = {
                   "timestamp":            datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
                   "event_type":           "PERFORMANCE_AUDIT",
@@ -941,8 +829,6 @@ jobs:
                   "expected_status_code": int(os.environ['EXPECTED_STATUS']),
                   "status_check_fails":   check_fails,
                   "breach_details":       report,
-                  "apache_bench":         ab_metrics,
-                  "k6":                   k6_details,
                   "run_url":              os.environ['RUN_URL']
               }
 
@@ -1024,214 +910,6 @@ jobs:
         with:
           name: performance-logs
           path: reports/benchmark
-
-      - name: Publish Central Dashboard Record to Wazuh
-        if: always()
-        env:
-          PROVISION_JOB_RESULT: ${{ needs.provision_monitoring.result }}
-          VAPT_JOB_RESULT: ${{ needs.security_vapt_job.result }}
-          BENCHMARK_JOB_RESULT: ${{ needs.benchmarking_job.result }}
-          WAZUH_INDEXER_URL: ${{ env.WAZUH_INDEXER_URL }}
-          WAZUH_INDEXER_PASSWORD: ${{ secrets.WAZUH_INDEXER_PASSWORD }}
-          DASHBOARD_INDEX: pipeline-dashboard-runs
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ARTIFACTS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts
-          REPOSITORY: ${{ github.repository }}
-          REPO_NAME: ${{ github.event.repository.name }}
-          BRANCH: ${{ github.ref_name }}
-          COMMIT_SHA: ${{ github.sha }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_NUMBER: ${{ github.run_number }}
-          TARGET_URL: ${{ env.TARGET_URL }}
-          TARGET_IP: ${{ env.TARGET_IP }}
-          APP_RUNTIME: ${{ env.APP_RUNTIME }}
-          APP_SERVICE_NAME: ${{ env.APP_SERVICE_NAME }}
-          GRAFANA_CLOUD_URL: ${{ env.GRAFANA_CLOUD_URL }}
-          SENTRY_ORG: ${{ env.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ env.SENTRY_PROJECT }}
-          K6_PROJECT_ID: ${{ secrets.K6_PROJECT_ID }}
-        run: |
-          python3 - <<'PYEOF'
-          import base64, datetime, json, os, ssl, sys, traceback, urllib.request
-          from pathlib import Path
-
-          def load_json(path):
-              p = Path(path)
-              if not p.exists():
-                  return None
-              try:
-                  return json.loads(p.read_text())
-              except Exception:
-                  return None
-
-          def normalize_status(value):
-              value = str(value or "unknown").lower()
-              if value in {"success", "passed", "pass", "clean", "healthy", "blocked"}:
-                  return "passed"
-              if value in {"failure", "failed", "fail", "error", "vulnerable"}:
-                  return "failed"
-              if value in {"warning", "partial", "cancelled", "skipped"}:
-                  return "partial"
-              return "unknown"
-
-          def stage(name, status, summary, details=None):
-              return {"name": name, "status": normalize_status(status), "summary": summary, "details": details or {}}
-
-          def optional_url(value):
-              value = (value or "").strip()
-              return value if value else None
-
-          provision = load_json("reports/provision/provision-report.json") or {}
-          vapt = load_json("reports/vapt/vapt-report.json") or {}
-          benchmark = load_json("reports/benchmark/benchmark-report.json") or {}
-
-          zap_counts = {
-              "high": vapt.get("alerts_high", 0),
-              "medium": vapt.get("alerts_medium", 0),
-              "low": vapt.get("alerts_low", 0),
-              "info": vapt.get("alerts_info", 0),
-              "total": vapt.get("alerts_total", 0),
-          }
-          security_details = {
-              "zap": {
-                  "status": normalize_status(vapt.get("status")),
-                  "summary": vapt.get("breach_details", "OWASP ZAP scan result not reported."),
-                  "target": vapt.get("target") or os.environ.get("TARGET_URL", ""),
-                  "counts": zap_counts,
-                  "findings": vapt.get("findings") or [],
-                  "run_url": vapt.get("run_url") or os.environ.get("RUN_URL", ""),
-              }
-          }
-          performance_details = {
-              "benchmark": {
-                  "status": normalize_status(benchmark.get("status")),
-                  "summary": benchmark.get("breach_details", "Benchmark result not reported."),
-                  "threshold": benchmark.get("threshold"),
-                  "latency_observed_ms": benchmark.get("latency_observed_ms"),
-                  "latency_threshold_ms": benchmark.get("latency_threshold_ms"),
-                  "error_rate_observed": benchmark.get("error_rate_observed"),
-                  "error_rate_limit": benchmark.get("error_rate_limit"),
-                  "expected_status_code": benchmark.get("expected_status_code"),
-                  "status_check_fails": benchmark.get("status_check_fails"),
-                  "apache_bench": benchmark.get("apache_bench") or {},
-                  "k6": benchmark.get("k6") or {},
-              }
-          }
-
-          provision_result = os.environ.get("PROVISION_JOB_RESULT", "unknown")
-          vapt_result = os.environ.get("VAPT_JOB_RESULT", "unknown")
-          benchmark_result = os.environ.get("BENCHMARK_JOB_RESULT", "unknown")
-          job_results = [provision_result, vapt_result, benchmark_result]
-          if all(result == "success" for result in job_results):
-              overall_status = "passed"
-          elif any(result == "failure" for result in job_results):
-              overall_status = "failed"
-          else:
-              overall_status = "partial"
-
-          sentry_project = os.environ.get("SENTRY_PROJECT", "")
-          sentry_org = os.environ.get("SENTRY_ORG", "")
-          sentry_url = f"https://sentry.io/organizations/{sentry_org}/projects/{sentry_project}/" if sentry_org and sentry_project else None
-          k6_project_id = os.environ.get("K6_PROJECT_ID", "")
-          k6_url = f"https://app.k6.io/projects/{k6_project_id}" if k6_project_id else None
-          grafana_url = optional_url(os.environ.get("GRAFANA_CLOUD_URL"))
-          observability_details = {
-              "grafana": {
-                  "status": normalize_status(provision_result),
-                  "summary": "Grafana Alloy, metrics, logs, and traces provisioning result.",
-                  "url": grafana_url,
-                  "alloy_configured": provision.get("grafana_alloy_configured"),
-                  "metrics_enabled": provision.get("metrics_enabled", True),
-                  "logs_enabled": provision.get("logs_enabled", True),
-                  "traces_enabled": provision.get("traces_enabled", True),
-                  "service": os.environ.get("APP_SERVICE_NAME", ""),
-              },
-              "sentry": {
-                  "status": "unknown",
-                  "summary": "Sentry SDK readiness is checked during provisioning; issue details require server-side Sentry API enrichment.",
-                  "url": sentry_url,
-                  "org": sentry_org,
-                  "project": sentry_project,
-                  "sdk_check_executed": provision.get("sentry_sdk_check_executed"),
-                  "issues": [],
-              }
-          }
-
-          payload = {
-              "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "pipeline_type": "enterprise-observability-security-benchmarking",
-              "repository": os.environ.get("REPOSITORY", ""),
-              "repo_name": os.environ.get("REPO_NAME", ""),
-              "branch": os.environ.get("BRANCH", ""),
-              "commit_sha": os.environ.get("COMMIT_SHA", ""),
-              "run_id": os.environ.get("RUN_ID", ""),
-              "run_number": os.environ.get("RUN_NUMBER", ""),
-              "run_url": os.environ.get("RUN_URL", ""),
-              "overall_status": overall_status,
-              "target_url": os.environ.get("TARGET_URL", ""),
-              "target_ip": os.environ.get("TARGET_IP", ""),
-              "app_runtime": os.environ.get("APP_RUNTIME", ""),
-              "app_service_name": os.environ.get("APP_SERVICE_NAME", ""),
-              "stages": [
-                  stage("provisioning_observability", provision_result, "Monitoring and observability provisioning job result.", provision),
-                  stage("vapt_zap", vapt.get("status", vapt_result), vapt.get("breach_details", "OWASP ZAP VAPT scan result."), vapt),
-                  stage("benchmarking_k6_ab", benchmark.get("status", benchmark_result), benchmark.get("breach_details", "k6 and Apache Bench performance result."), benchmark),
-                  stage("sentry_readiness", "unknown", "Sentry SDK readiness is checked during provisioning logs; no standalone artifact is currently emitted."),
-              ],
-              "metrics": {
-                  "latency_p95_ms": benchmark.get("latency_observed_ms"),
-                  "latency_threshold_ms": benchmark.get("latency_threshold_ms"),
-                  "error_rate": benchmark.get("error_rate_observed"),
-                  "error_rate_limit": benchmark.get("error_rate_limit"),
-                  "expected_status": benchmark.get("expected_status_code"),
-                  "status_check_fails": benchmark.get("status_check_fails"),
-                  "zap_high": vapt.get("alerts_high"),
-                  "zap_medium": vapt.get("alerts_medium"),
-                  "zap_low": vapt.get("alerts_low"),
-                  "zap_info": vapt.get("alerts_info"),
-                  "zap_total": vapt.get("alerts_total"),
-                  "sonar_quality_gate": None,
-              },
-              "security": security_details,
-              "performance": performance_details,
-              "observability": observability_details,
-              "links": {
-                  "github_actions": optional_url(os.environ.get("RUN_URL")),
-                  "artifacts": optional_url(os.environ.get("ARTIFACTS_URL")),
-                  "grafana": grafana_url,
-                  "sentry": optional_url(sentry_url),
-                  "wazuh": optional_url(os.environ.get("WAZUH_INDEXER_URL")),
-                  "k6": optional_url(k6_url),
-                  "sonarqube": None,
-              },
-          }
-
-          Path("dashboard-run.json").write_text(json.dumps(payload, indent=2))
-
-          try:
-              url = f"{os.environ['WAZUH_INDEXER_URL'].rstrip('/')}/{os.environ['DASHBOARD_INDEX']}/_doc/"
-              auth = base64.b64encode(f"admin:{os.environ['WAZUH_INDEXER_PASSWORD']}".encode()).decode()
-              req = urllib.request.Request(
-                  url,
-                  data=json.dumps(payload).encode(),
-                  headers={"Content-Type": "application/json", "Authorization": f"Basic {auth}"},
-                  method="POST",
-              )
-              ctx = ssl._create_unverified_context()
-              with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
-                  print(f"Dashboard record indexed in {os.environ['DASHBOARD_INDEX']} with Wazuh response {resp.status}")
-          except Exception as exc:
-              print(f"Failed to publish dashboard record: {exc}")
-              traceback.print_exc()
-              sys.exit(1)
-          PYEOF
-
-      - name: Upload Central Dashboard Record
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: central-dashboard-record
-          path: dashboard-run.json
 
       - name: Send Final Google Chat Pipeline Result
         env:
