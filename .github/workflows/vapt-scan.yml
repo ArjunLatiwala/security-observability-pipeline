@@ -265,8 +265,15 @@ jobs:
           BASE_URL="https://${SM_BACKEND}/api/v1/check"
           AUTH="Authorization: Bearer ${SM_TOKEN}"
 
-          # Probe IDs: Mumbai=21, Frankfurt=8, NorthVirginia=14
-          PROBE_IDS="[21, 8, 14]"
+          # Probe IDs: Mumbai=21 (reduced to 1 probe to stay within free tier quota)
+          # NOTE: Free tier allows 100K check executions/month
+          # 4 checks × 1 probe × 2 checks/hour × 24 hours × 30 days = 5,760 executions/month
+          # To use 3 probes (Mumbai=21, Frankfurt=8, NorthVirginia=14), upgrade to paid tier
+          PROBE_IDS="[21]"
+
+          # Check frequency: 1800000ms = 30 minutes (reduced from 5 min to conserve quota)
+          # To use 5-minute checks (300000ms), upgrade to paid tier or reduce number of checks
+          CHECK_FREQUENCY="1800000"
 
           echo "--- Creating Synthetic Monitoring Checks ---"
 
@@ -280,7 +287,7 @@ jobs:
               \"job\": \"${CHECK_NAME}-http\",
               \"target\": \"${{ env.TARGET_URL }}\",
               \"enabled\": true,
-              \"frequency\": 300000,
+              \"frequency\": ${CHECK_FREQUENCY},
               \"timeout\": 10000,
               \"probes\": ${PROBE_IDS},
               \"settings\": {
