@@ -37,7 +37,7 @@ on:
 
 env:
   # --- TARGET ENVIRONMENT CONFIGURATION ---
-  TARGET_URL: 'https://bloggr.ai/'
+  TARGET_URL: 'https://husaintrivedi.site'
   TARGET_IP: '35.200.203.148'
   SSH_USER: 'husaintrivedi'
 
@@ -70,7 +70,7 @@ env:
 
   # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
   LATENCY_THRESHOLD: 2000          # Fail: Real latency > 10ms (Set to 2000 for PROD)
-  EXPECTED_STATUS: 200           # HTTP status code your app returns (307 = Temporary Redirect)
+  EXPECTED_STATUS: 307           # HTTP status code your app returns (307 = Temporary Redirect)
   ERROR_RATE_LIMIT: 0.01       # Fail: Tiny threshold (Set to 0.01 for PROD)
 
 jobs:
@@ -249,11 +249,12 @@ jobs:
           SM_TOKEN: ${{ secrets.GRAFANA_SM_TOKEN }}
           SM_BACKEND: ${{ secrets.GRAFANA_SM_BACKEND }}
         run: |
-          CHECK_NAME="${{ github.repository }}"
           TARGET_DOMAIN=$(echo "${{ env.TARGET_URL }}" | sed -E 's|https?://||' | sed 's|/.*||')
+          CHECK_NAME="${{ github.repository }}-${TARGET_DOMAIN}"
 
           echo "--- Grafana Synthetic Monitoring Setup ---"
-          echo "Repository: $CHECK_NAME"
+          echo "Repository: ${{ github.repository }}"
+          echo "Check Name: $CHECK_NAME"
           echo "Target URL: ${{ env.TARGET_URL }}"
           echo "Target Domain: $TARGET_DOMAIN"
           echo "Target IP: ${{ env.TARGET_IP }}"
@@ -294,7 +295,8 @@ jobs:
               \"labels\": {
                 \"repo\": \"${{ github.event.repository.name }}\",
                 \"type\": \"http\",
-                \"environment\": \"production\"
+                \"environment\": \"production\",
+                \"target_domain\": \"${TARGET_DOMAIN}\"
               }
             }")
           HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -n1)
