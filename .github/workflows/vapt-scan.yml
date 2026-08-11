@@ -51,13 +51,11 @@ env:
   APP_SERVICE_NAME: ${{ github.event.repository.name }}
 
   # Simple app start mode. Set these when the workflow should start the app directly.
-  # Python example: APP_START_COMMAND='.venv/bin/python app.py'
-  # Node example: APP_START_COMMAND='node server.js'
-  # The workflow adds OTEL env vars automatically and prefixes Python with opentelemetry-instrument.
-  APP_WORKING_DIR: '/home/husaintrivedi/apm-test-app'
-  APP_START_COMMAND: '.venv/bin/python app.py'
-  APP_PORT: '3000'
-  APP_LOG_FILE: '/tmp/apm-test-app.log'
+  # Leave blank to skip app start (when there is no specific app to instrument on this server).
+  APP_WORKING_DIR: ''
+  APP_START_COMMAND: ''
+  APP_PORT: ''
+  APP_LOG_FILE: '/tmp/pipeline-app.log'
 
   # Advanced restart mode for PM2/systemd/Docker/custom process managers.
   # If set, this command runs instead of APP_WORKING_DIR/APP_START_COMMAND simple mode.
