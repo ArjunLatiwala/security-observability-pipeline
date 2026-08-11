@@ -37,12 +37,12 @@ on:
 
 env:
   # --- TARGET ENVIRONMENT CONFIGURATION ---
-  TARGET_URL: 'http://34.100.239.232/'
-  TARGET_IP: '34.100.239.232'
+  TARGET_URL: 'https://168.144.77.92/'
+  TARGET_IP: '168.144.77.92'
   SSH_USER: 'creole'
 
   # --- APPLICATION RUNTIME CONFIGURATION ---
-  INSTALL_BACKEND_AGENTS: 'true' # SSH key is configured for this GCP VM
+  INSTALL_BACKEND_AGENTS: 'false' # No SSH access to this external server
   # APP_RUNTIME controls which OpenTelemetry setup this workflow prepares on the server.
   # Set to node for Node.js apps, python for Python apps, or none for unsupported/manual instrumentation.
   APP_RUNTIME: 'python'
