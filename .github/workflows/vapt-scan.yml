@@ -37,8 +37,8 @@ on:
 
 env:
   # --- TARGET ENVIRONMENT CONFIGURATION ---
-  TARGET_URL: 'https://bloggr.ai/'
-  TARGET_IP: '35.200.203.148'
+  TARGET_URL: 'https://168.144.77.92/'
+  TARGET_IP: '168.144.77.92'
   SSH_USER: 'husaintrivedi'
 
   # --- APPLICATION RUNTIME CONFIGURATION ---
@@ -64,8 +64,8 @@ env:
   APP_RESTART_COMMAND: ''
 
   # --- WAZUH SERVER CONFIGURATION ---
-  WAZUH_INDEXER_URL: 'https://35.200.203.148:8080'
-  WAZUH_MANAGER_URL: 'https://35.200.203.148:55000'
+  WAZUH_INDEXER_URL: 'https://34.100.239.232:9200'
+  WAZUH_MANAGER_URL: 'https://34.100.239.232:55000'
 
 
   # --- PRODUCTION THRESHOLDS (Modify these to intentionally fail or pass) ---
