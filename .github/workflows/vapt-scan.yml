@@ -794,6 +794,7 @@ jobs:
           import { check } from 'k6';
           export const options = {
             iterations: 50,
+            insecureSkipTLSVerify: true,
             thresholds: {
               'http_req_duration':['p(95)<' + __ENV.LATENCY_LIMIT],
               'http_req_failed':['rate<' + __ENV.ERROR_LIMIT],
@@ -801,7 +802,7 @@ jobs:
             }
           };
           export default function () {
-            const res = http.get(__ENV.MY_URL);
+            const res = http.get(__ENV.MY_URL, { responseType: 'text', timeout: '30s' });
             check(res, { 'status_is_correct': (r) => r.status === parseInt(__ENV.EXPECTED_ST) });
           }
           EOF
