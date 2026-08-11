@@ -42,6 +42,7 @@ env:
   SSH_USER: 'husaintrivedi'
 
   # --- APPLICATION RUNTIME CONFIGURATION ---
+  INSTALL_BACKEND_AGENTS: 'false' # Set to 'true' if you have SSH keys configured for this server
   # APP_RUNTIME controls which OpenTelemetry setup this workflow prepares on the server.
   # Set to node for Node.js apps, python for Python apps, or none for unsupported/manual instrumentation.
   APP_RUNTIME: 'python'
@@ -121,6 +122,7 @@ jobs:
           ssh-keyscan -H ${{ env.TARGET_IP }} >> ~/.ssh/known_hosts
 
       - name: Configure Grafana Alloy Collector
+        if: env.INSTALL_BACKEND_AGENTS == 'true'
         env:
           GRAFANA_PROMETHEUS_URL: ${{ secrets.GRAFANA_PROMETHEUS_URL }}
           GRAFANA_INSTANCE_ID: ${{ secrets.GRAFANA_INSTANCE_ID }}
@@ -424,6 +426,7 @@ jobs:
           echo "View checks: https://grafana.com/orgs/YOUR_ORG/synthetic-monitoring"
 
       - name: Configure OpenTelemetry Runtime
+        if: env.INSTALL_BACKEND_AGENTS == 'true'
         run: |
           ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
             echo "--- Configuring OpenTelemetry Runtime ---"
@@ -484,6 +487,7 @@ jobs:
           SSHEOF
 
       - name: Start Application with OpenTelemetry
+        if: env.INSTALL_BACKEND_AGENTS == 'true'
         run: |
           ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
             echo "--- Starting Application with OpenTelemetry ---"
@@ -554,6 +558,7 @@ jobs:
           SSHEOF
 
       - name: Check Sentry SDK Integration
+        if: env.INSTALL_BACKEND_AGENTS == 'true'
         run: |
           ssh ${{ env.SSH_USER }}@${{ env.TARGET_IP }} << 'SSHEOF'
             echo "--- Checking Sentry SDK Integration ---"
