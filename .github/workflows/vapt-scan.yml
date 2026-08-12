@@ -67,7 +67,7 @@ env:
   # Advanced restart mode for PM2/systemd/Docker/custom process managers.
   # If set, this command runs instead of APP_WORKING_DIR/APP_START_COMMAND simple mode.
   # Examples: pm2 restart my-app --update-env, sudo systemctl restart my-app.
-  APP_RESTART_COMMAND: 'pm2 restart crm-frontend crm-backend --update-env'
+  APP_RESTART_COMMAND: 'pm2 restart my-awesome-app --update-env'
 
   # --- WAZUH SERVER CONFIGURATION ---
   WAZUH_INDEXER_URL: 'https://34.100.239.232:9200'
