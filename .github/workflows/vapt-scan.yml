@@ -55,7 +55,7 @@ env:
   APP_SERVICE_NAME: 'my-awesome-app'
 
   # GRAFANA_STACK_SLUG is your exact Grafana Cloud stack ID
-  GRAFANA_STACK_SLUG: ${{ vars.GRAFANA_STACK_SLUG }}
+  GRAFANA_STACK_SLUG: ${{ secrets.GRAFANA_STACK_SLUG }}
 
   # Simple app start mode. Set these when the workflow should start the app directly.
   # Leave blank to skip app start (when there is no specific app to instrument on this server).
@@ -130,7 +130,7 @@ jobs:
         if: env.INSTALL_BACKEND_AGENTS == 'true'
         run: |
           echo "Fetching Grafana stack details for ${{ env.GRAFANA_STACK_SLUG }}..."
-          STACK=$(curl -s -H "Authorization: Bearer ${{ secrets.GRAFANA_CLOUD_API_TOKEN }}" \
+          STACK=$(curl -s -H "Authorization: Bearer ${{ secrets.GRAFANA_API_KEY }}" \
             "https://grafana.com/api/instances/${{ env.GRAFANA_STACK_SLUG }}")
           
           echo "--- Raw API Response ---"
@@ -170,7 +170,7 @@ jobs:
             echo "GRAFANA_LOKI_USER=$LOKI_USER"
             echo "GRAFANA_TEMPO_URL=$TEMPO_HOST:443"
             echo "GRAFANA_TEMPO_USER=$TEMPO_USER"
-            echo "GRAFANA_API_KEY=${{ secrets.GRAFANA_CLOUD_API_TOKEN }}"
+            echo "GRAFANA_API_KEY=${{ secrets.GRAFANA_API_KEY }}"
           } >> $GITHUB_ENV
 
           echo "Grafana credentials resolved for stack: ${{ env.GRAFANA_STACK_SLUG }}"
