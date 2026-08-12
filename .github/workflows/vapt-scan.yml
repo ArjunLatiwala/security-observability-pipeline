@@ -37,15 +37,15 @@ on:
 
 env:
   # --- TARGET ENVIRONMENT CONFIGURATION ---
-  TARGET_URL: 'https://168.144.77.92/'
-  TARGET_IP: '168.144.77.92'
-  SSH_USER: 'creole'
+  TARGET_URL: 'http://3.239.184.169:3000/'
+  TARGET_IP: '3.239.184.169'
+  SSH_USER: 'ubuntu'
 
   # --- APPLICATION RUNTIME CONFIGURATION ---
-  INSTALL_BACKEND_AGENTS: 'false' # No SSH access to this external server
+  INSTALL_BACKEND_AGENTS: 'true' # SSH key is configured for this AWS VM
   # APP_RUNTIME controls which OpenTelemetry setup this workflow prepares on the server.
   # Set to node for Node.js apps, python for Python apps, or none for unsupported/manual instrumentation.
-  APP_RUNTIME: 'python'
+  APP_RUNTIME: 'node'
 
   # APP_SERVICE_NAME appears in Grafana Tempo/APM as service.name.
   APP_SERVICE_NAME: ${{ github.event.repository.name }}
