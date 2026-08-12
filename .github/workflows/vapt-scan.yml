@@ -35,6 +35,9 @@ name: Step 4 & 5 - Final Scalable Enterprise Architecture
 on:
   workflow_dispatch:
 
+permissions:
+  issues: write
+
 env:
   # --- TARGET ENVIRONMENT CONFIGURATION ---
   TARGET_URL: 'http://3.239.184.169:3000/'
