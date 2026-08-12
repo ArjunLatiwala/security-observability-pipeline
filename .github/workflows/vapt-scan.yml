@@ -63,7 +63,7 @@ env:
   # Advanced restart mode for PM2/systemd/Docker/custom process managers.
   # If set, this command runs instead of APP_WORKING_DIR/APP_START_COMMAND simple mode.
   # Examples: pm2 restart my-app --update-env, sudo systemctl restart my-app.
-  APP_RESTART_COMMAND: ''
+  APP_RESTART_COMMAND: 'pm2 restart crm-frontend crm-backend --update-env'
 
   # --- WAZUH SERVER CONFIGURATION ---
   WAZUH_INDEXER_URL: 'https://34.100.239.232:9200'
@@ -465,7 +465,7 @@ jobs:
                   ls "$GLOBAL_NODE_MODULES" || true
                   exit 1
                 fi
-                echo "NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register" | sudo tee -a /etc/environment
+                echo 'NODE_OPTIONS="--require @opentelemetry/auto-instrumentations-node/register"' | sudo tee -a /etc/environment
                 echo "NODE_PATH=${GLOBAL_NODE_MODULES}" | sudo tee -a /etc/environment
                 ;;
               python)
