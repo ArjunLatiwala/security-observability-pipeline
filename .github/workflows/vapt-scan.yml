@@ -164,7 +164,7 @@ jobs:
           TEMPO_HOST=$(echo "$TEMPO_URL" | sed 's#https://##')
 
           {
-            echo "GRAFANA_PROMETHEUS_URL=$PROM_URL"
+            echo "GRAFANA_PROMETHEUS_URL=$PROM_URL/api/prom/push"
             echo "GRAFANA_INSTANCE_ID=$PROM_USER"
             echo "GRAFANA_LOKI_URL=$LOKI_URL/loki/api/v1/push"
             echo "GRAFANA_LOKI_USER=$LOKI_USER"
