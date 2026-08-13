@@ -111,6 +111,7 @@ jobs:
               -d @-
 
       - name: Setup SSH Key
+        if: env.INSTALL_BACKEND_AGENTS == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
